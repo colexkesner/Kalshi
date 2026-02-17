@@ -164,6 +164,14 @@ class Config:
     # Auto-configure for gasless mode (auto-detected based on builder credentials)
     use_gasless: bool = False
 
+    # Risk controls
+    dry_run: bool = True
+    max_daily_notional: float = 1000.0
+    max_position_per_market: float = 500.0
+    max_open_orders: int = 10
+    max_loss_daily: float = 200.0
+    halt_on_error_count: int = 5
+
     def __post_init__(self):
         """Validate and normalize configuration."""
         if self.safe_address:
@@ -249,6 +257,15 @@ class Config:
         # Auto-detect gasless mode
         config.use_gasless = config.builder.is_configured()
 
+        # Risk controls
+        dry_run_val = data.get("dry_run", config.dry_run)
+        config.dry_run = dry_run_val if isinstance(dry_run_val, bool) else str(dry_run_val).lower() in ("1", "true", "yes", "on")
+        config.max_daily_notional = float(data.get("max_daily_notional", config.max_daily_notional))
+        config.max_position_per_market = float(data.get("max_position_per_market", config.max_position_per_market))
+        config.max_open_orders = int(data.get("max_open_orders", config.max_open_orders))
+        config.max_loss_daily = float(data.get("max_loss_daily", config.max_loss_daily))
+        config.halt_on_error_count = int(data.get("halt_on_error_count", config.halt_on_error_count))
+
         return config
 
     @classmethod
@@ -323,6 +340,14 @@ class Config:
 
         # Auto-detect gasless mode
         config.use_gasless = config.builder.is_configured()
+
+        # Risk controls
+        config.dry_run = get_env_bool("DRY_RUN", config.dry_run)
+        config.max_daily_notional = get_env_float("MAX_DAILY_NOTIONAL", config.max_daily_notional)
+        config.max_position_per_market = get_env_float("MAX_POSITION_PER_MARKET", config.max_position_per_market)
+        config.max_open_orders = get_env_int("MAX_OPEN_ORDERS", config.max_open_orders)
+        config.max_loss_daily = get_env_float("MAX_LOSS_DAILY", config.max_loss_daily)
+        config.halt_on_error_count = get_env_int("HALT_ON_ERROR_COUNT", config.halt_on_error_count)
 
         return config
 
@@ -400,6 +425,12 @@ class Config:
             "default_price": self.default_price,
             "data_dir": self.data_dir,
             "log_level": self.log_level,
+            "dry_run": self.dry_run,
+            "max_daily_notional": self.max_daily_notional,
+            "max_position_per_market": self.max_position_per_market,
+            "max_open_orders": self.max_open_orders,
+            "max_loss_daily": self.max_loss_daily,
+            "halt_on_error_count": self.halt_on_error_count,
         }
 
     def validate(self) -> List[str]:

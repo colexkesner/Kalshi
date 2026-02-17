@@ -96,8 +96,9 @@ class TestTradingBot:
         assert bot.config.safe_address == self.TEST_SAFE_ADDRESS
 
     def test_is_initialized_without_signer(self):
-        """Test is_initialized returns False without signer."""
-        bot = TradingBot(safe_address=self.TEST_SAFE_ADDRESS)
+        """Test is_initialized is False without signer when not in DRY_RUN."""
+        config = Config(safe_address=self.TEST_SAFE_ADDRESS, dry_run=False)
+        bot = TradingBot(config=config)
 
         assert bot.is_initialized() is False
 
@@ -237,6 +238,26 @@ builder:
         )
 
         assert order_dict["side"] == "BUY"
+
+    def test_dry_run_no_private_key_required(self):
+        """DRY_RUN mode should initialize without private key."""
+        config = Config(safe_address=self.TEST_SAFE_ADDRESS, dry_run=True)
+        bot = TradingBot(config=config)
+        assert bot.is_initialized() is True
+
+    @pytest.mark.asyncio
+    async def test_dry_run_place_order_simulates(self):
+        """DRY_RUN should execute flow without submitting orders."""
+        config = Config(safe_address=self.TEST_SAFE_ADDRESS, dry_run=True)
+        bot = TradingBot(config=config)
+        result = await bot.place_order(
+            token_id="123",
+            price=0.5,
+            size=2,
+            side="BUY",
+        )
+        assert result.success is True
+        assert result.status == "simulated"
 
 
 class TestCreateBot:
