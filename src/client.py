@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Client Module - API Clients for Polymarket
 
@@ -32,13 +34,16 @@ import hmac
 import hashlib
 import base64
 import json
-from typing import Optional, Dict, Any, List
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from dataclasses import dataclass
 
 import requests
 
 from .config import BuilderConfig
 from .http import ThreadLocalSessionMixin
+
+if TYPE_CHECKING:
+    from .signer import OrderSigner
 
 
 class ApiError(Exception):
@@ -291,7 +296,7 @@ class ClobClient(ApiClient):
 
         return headers
 
-    def derive_api_key(self, signer: "OrderSigner", nonce: int = 0) -> ApiCredentials:
+    def derive_api_key(self, signer: OrderSigner, nonce: int = 0) -> ApiCredentials:
         """
         Derive L2 API credentials using L1 EIP-712 authentication.
 
@@ -326,7 +331,7 @@ class ClobClient(ApiClient):
             passphrase=response.get("passphrase", ""),
         )
 
-    def create_api_key(self, signer: "OrderSigner", nonce: int = 0) -> ApiCredentials:
+    def create_api_key(self, signer: OrderSigner, nonce: int = 0) -> ApiCredentials:
         """
         Create new L2 API credentials using L1 EIP-712 authentication.
 
@@ -360,7 +365,7 @@ class ClobClient(ApiClient):
             passphrase=response.get("passphrase", ""),
         )
 
-    def create_or_derive_api_key(self, signer: "OrderSigner", nonce: int = 0) -> ApiCredentials:
+    def create_or_derive_api_key(self, signer: OrderSigner, nonce: int = 0) -> ApiCredentials:
         """
         Create API credentials if not exists, otherwise derive them.
 
@@ -480,6 +485,20 @@ class ClobClient(ApiClient):
         if isinstance(result, dict) and "data" in result:
             return result.get("data", [])
         return result if isinstance(result, list) else []
+
+
+    def get_positions(self) -> List[Dict[str, Any]]:
+        """Get current positions for the configured funder."""
+        endpoint = "/positions"
+        result = self._request("GET", endpoint, params={"user": self.funder})
+        if isinstance(result, dict) and "data" in result:
+            return result.get("data", [])
+        return result if isinstance(result, list) else []
+
+    def get_balance_allowance(self) -> Dict[str, Any]:
+        """Get balance/allowance summary for configured funder."""
+        endpoint = "/balance-allowance"
+        return self._request("GET", endpoint, params={"asset_type": "COLLATERAL", "signature_type": self.signature_type})
 
     def post_order(
         self,

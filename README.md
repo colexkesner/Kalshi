@@ -221,11 +221,17 @@ polymarket-trading-bot/
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `POLY_PRIVATE_KEY` | Yes | Your wallet private key |
+| `POLY_PRIVATE_KEY` | Only when `POLY_DRY_RUN=false` | Your wallet private key |
 | `POLY_SAFE_ADDRESS` | Yes | Your Polymarket Safe address |
 | `POLY_BUILDER_API_KEY` | For gasless | Builder Program API key |
 | `POLY_BUILDER_API_SECRET` | For gasless | Builder Program secret |
 | `POLY_BUILDER_API_PASSPHRASE` | For gasless | Builder Program passphrase |
+| `POLY_DRY_RUN` | No (default `true`) | Simulate orders and never place live trades |
+| `POLY_MAX_DAILY_NOTIONAL` | No | Daily notional cap in USDC |
+| `POLY_MAX_POSITION_PER_MARKET` | No | Max exposure per market |
+| `POLY_MAX_OPEN_ORDERS` | No | Max live open orders |
+| `POLY_MAX_LOSS_DAILY` | No | Daily stop-loss (USDC) |
+| `POLY_HALT_ON_ERROR_COUNT` | No | Halt trading after repeated errors |
 
 ### Config File (Alternative)
 
@@ -295,6 +301,14 @@ The bot will automatically use gasless mode when credentials are present.
 | `get_current_15m_market(coin)` | Get current 15-min market |
 | `get_market_info(coin)` | Get market with token IDs |
 | `get_all_15m_markets()` | List all 15-min markets |
+
+
+### Safe Key Usage
+
+- Use a **dedicated hot wallet** with minimal funds for automation.
+- Keep long-term funds in cold storage or separate wallets.
+- In `DRY_RUN` mode, the bot can run end-to-end **without a private key**.
+- Never share `.env`, encrypted key files, or API credentials.
 
 ## Security
 

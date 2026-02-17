@@ -1,0 +1,16 @@
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+ignore = ["E402", "E501", "I001", "F401", "F541", "F841", "B904", "B027"]
+
+[tool.bandit]
+exclude_dirs = ["tests", "docs"]
+skips = ["B101"]
+
+[tool.mypy]
+python_version = "3.9"
+ignore_missing_imports = true
+warn_unused_ignores = true

@@ -27,7 +27,7 @@ websockets>=12.0               # WebSocket client for market data
 # =============================================================================
 
 # Official Polymarket clients (uncomment if needed)
-# py-clob-client>=0.1.0
+py-clob-client>=0.19.0
 # py-builder-relayer-client>=0.1.0
 # py-builder-signing-sdk>=0.1.0
 
@@ -38,3 +38,8 @@ websockets>=12.0               # WebSocket client for market data
 pytest>=7.0.0                  # Test framework
 pytest-asyncio>=0.21.0         # Async test support
 pytest-cov>=4.0.0              # Code coverage
+
+ruff>=0.6.0
+bandit>=1.7.9
+pip-audit>=2.7.3
+mypy>=1.11.0

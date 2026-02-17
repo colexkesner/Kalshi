@@ -36,3 +36,12 @@ data_dir: "credentials"
 
 # Logging level: DEBUG, INFO, WARNING, ERROR
 log_level: "INFO"
+
+# Safety Rails
+# If true, run strategy and risk logic but do not submit live orders.
+dry_run: true
+max_daily_notional: 1000.0
+max_position_per_market: 500.0
+max_open_orders: 10
+max_loss_daily: 200.0
+halt_on_error_count: 5

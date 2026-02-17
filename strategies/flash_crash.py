@@ -25,7 +25,7 @@ from typing import Dict
 
 from lib.console import Colors, format_countdown
 from strategies.base import BaseStrategy, StrategyConfig
-from src.bot import TradingBot
+from venues.base import VenueAdapter
 from src.websocket_client import OrderbookSnapshot
 
 
@@ -44,9 +44,9 @@ class FlashCrashStrategy(BaseStrategy):
     the volatility with defined take-profit and stop-loss levels.
     """
 
-    def __init__(self, bot: TradingBot, config: FlashCrashConfig):
+    def __init__(self, venue: VenueAdapter, config: FlashCrashConfig):
         """Initialize flash crash strategy."""
-        super().__init__(bot, config)
+        super().__init__(venue, config)
         self.flash_config = config
 
         # Update price tracker with our threshold

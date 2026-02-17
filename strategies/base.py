@@ -29,8 +29,8 @@ from typing import Optional, Dict, List
 from lib.console import LogBuffer, log
 from lib.market_manager import MarketManager, MarketInfo
 from lib.price_tracker import PriceTracker
-from lib.position_manager import PositionManager
-from src.bot import TradingBot
+from lib.position_manager import Position, PositionManager
+from venues.base import VenueAdapter, VenueOrderRequest
 from src.websocket_client import OrderbookSnapshot
 
 
@@ -68,15 +68,15 @@ class BaseStrategy(ABC):
     - Logging and status display
     """
 
-    def __init__(self, bot: TradingBot, config: StrategyConfig):
+    def __init__(self, venue: VenueAdapter, config: StrategyConfig):
         """
         Initialize base strategy.
 
         Args:
-            bot: TradingBot instance for order execution
+            venue: VenueAdapter for order execution
             config: Strategy configuration
         """
-        self.bot = bot
+        self.venue = venue
         self.config = config
 
         # Core components
@@ -131,16 +131,7 @@ class BaseStrategy(ABC):
 
     def _refresh_orders_sync(self) -> List[dict]:
         """Refresh open orders synchronously (called via to_thread)."""
-        try:
-            import asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                return loop.run_until_complete(self.bot.get_open_orders())
-            finally:
-                loop.close()
-        except Exception:
-            return []
+        return []
 
     async def _do_order_refresh(self) -> None:
         """Background task to refresh orders without blocking."""
@@ -321,11 +312,9 @@ class BaseStrategy(ABC):
 
         self.log(f"BUY {side.upper()} @ {current_price:.4f} size={size:.2f}", "trade")
 
-        result = await self.bot.place_order(
-            token_id=token_id,
-            price=buy_price,
-            size=size,
-            side="BUY"
+        result = await asyncio.to_thread(
+            self.venue.place_order,
+            VenueOrderRequest(token_id=token_id, price=buy_price, size=size, side="BUY"),
         )
 
         if result.success:
@@ -356,11 +345,9 @@ class BaseStrategy(ABC):
         sell_price = max(current_price - 0.02, 0.01)
         pnl = position.get_pnl(current_price)
 
-        result = await self.bot.place_order(
-            token_id=position.token_id,
-            price=sell_price,
-            size=position.size,
-            side="SELL"
+        result = await asyncio.to_thread(
+            self.venue.place_order,
+            VenueOrderRequest(token_id=position.token_id, price=sell_price, size=position.size, side="SELL"),
         )
 
         if result.success:

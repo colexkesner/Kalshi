@@ -37,9 +37,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from .config import Config, BuilderConfig
-from .signer import OrderSigner, Order
+from .signer import OrderSigner
 from .client import ClobClient, RelayerClient, ApiCredentials
 from .crypto import KeyManager, CryptoError, InvalidPasswordError
+from src.risk import RiskLimits, RiskManager
+from venues import PolymarketClobVenue, VenueOrderRequest
 
 
 # Configure logging
@@ -184,6 +186,7 @@ class TradingBot:
         # Initialize components
         self.signer: Optional[OrderSigner] = None
         self.clob_client: Optional[ClobClient] = None
+        self.venue: Optional[PolymarketClobVenue] = None
         self.relayer_client: Optional[RelayerClient] = None
         self._api_creds: Optional[ApiCredentials] = None
 
@@ -199,6 +202,15 @@ class TradingBot:
 
         # Initialize API clients
         self._init_clients()
+
+        self.risk = RiskManager(RiskLimits(
+            dry_run=self.config.dry_run,
+            max_daily_notional=self.config.max_daily_notional,
+            max_position_per_market=self.config.max_position_per_market,
+            max_open_orders=self.config.max_open_orders,
+            max_loss_daily=self.config.max_loss_daily,
+            halt_on_error_count=self.config.halt_on_error_count,
+        ))
 
         # Auto-derive API credentials if we have a signer but no API creds
         if self.signer and not self._api_creds:
@@ -255,6 +267,8 @@ class TradingBot:
             builder_creds=self.config.builder if self.config.use_gasless else None,
         )
 
+        self.venue = PolymarketClobVenue(config=self.config, signer=self.signer)
+
         # Relayer client (for gasless)
         if self.config.use_gasless:
             self.relayer_client = RelayerClient(
@@ -271,17 +285,20 @@ class TradingBot:
 
     def is_initialized(self) -> bool:
         """Check if bot is properly initialized."""
+        if self.config.dry_run:
+            return bool(self.config.safe_address and self.clob_client is not None and self.venue is not None)
         return (
             self.signer is not None and
-            self.config.safe_address and
-            self.clob_client is not None
+            bool(self.config.safe_address) and
+            self.clob_client is not None and
+            self.venue is not None
         )
 
     def require_signer(self) -> OrderSigner:
         """Get signer or raise if not initialized."""
         if not self.signer:
             raise NotInitializedError(
-                "Signer not initialized. Provide private_key or encrypted_key."
+                "Signer not initialized. Provide private_key or encrypted_key (required when DRY_RUN is false)."
             )
         return self.signer
 
@@ -308,37 +325,51 @@ class TradingBot:
         Returns:
             OrderResult with order status
         """
-        signer = self.require_signer()
-
         try:
-            # Create order
-            order = Order(
+            if not self.venue:
+                return OrderResult(success=False, message="Venue not initialized")
+
+            order_req = VenueOrderRequest(
                 token_id=token_id,
                 price=price,
                 size=size,
                 side=side,
-                maker=self.config.safe_address,
+                order_type=order_type,
                 fee_rate_bps=fee_rate_bps,
             )
 
-            # Sign order
-            signed = signer.sign_order(order)
+            open_orders = [] if self.config.dry_run else await self.get_open_orders()
+            positions = [] if self.config.dry_run else await self.get_positions()
+            ok, reason = self.risk.validate_order(order_req, open_orders, positions)
+            if not ok:
+                return OrderResult(success=False, message=reason)
 
-            # Submit to CLOB
-            response = await self._run_in_thread(
-                self.clob_client.post_order,
-                signed,
-                order_type,
+            self.risk.on_order_attempt(order_req)
+
+            if self.config.dry_run:
+                logger.info("DRY_RUN enabled: skipping live order placement")
+                return OrderResult(
+                    success=True,
+                    order_id="dry-run-order",
+                    status="simulated",
+                    message="DRY_RUN simulated order",
+                    data={"dry_run": True},
+                )
+
+            if not self.signer:
+                return OrderResult(success=False, message="Signer required when DRY_RUN is false")
+
+            response = await self._run_in_thread(self.venue.place_order, order_req)
+            return OrderResult(
+                success=response.success,
+                order_id=response.order_id,
+                status=response.status,
+                message=response.message or ("Order placed successfully" if response.success else "Order failed"),
+                data=response.data or {},
             )
-
-            logger.info(
-                f"Order placed: {side} {size}@{price} "
-                f"(token: {token_id[:16]}...)"
-            )
-
-            return OrderResult.from_response(response)
 
         except Exception as e:
+            self.risk.on_error()
             logger.error(f"Failed to place order: {e}")
             return OrderResult(
                 success=False,
@@ -391,7 +422,7 @@ class TradingBot:
             OrderResult with cancellation status
         """
         try:
-            response = await self._run_in_thread(self.clob_client.cancel_order, order_id)
+            response = await self._run_in_thread(self.venue.cancel_order, order_id)
             logger.info(f"Order cancelled: {order_id}")
             return OrderResult(
                 success=True,
@@ -522,10 +553,18 @@ class TradingBot:
             Order book data
         """
         try:
-            return await self._run_in_thread(self.clob_client.get_order_book, token_id)
+            return await self._run_in_thread(self.venue.get_orderbook, token_id)
         except Exception as e:
             logger.error(f"Failed to get order book: {e}")
             return {}
+
+
+    async def get_positions(self) -> List[Dict[str, Any]]:
+        """Get venue positions."""
+        try:
+            return await self._run_in_thread(self.venue.positions)
+        except Exception:
+            return []
 
     async def get_market_price(self, token_id: str) -> Dict[str, Any]:
         """

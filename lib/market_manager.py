@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Optional, Dict, Callable, List, Union, Awaitable
 
-from src.gamma_client import GammaClient
+from src.discovery import get_current_15m_market_info
 from src.websocket_client import MarketWebSocket, OrderbookSnapshot
 
 
@@ -165,7 +165,6 @@ class MarketManager:
         self.auto_switch_market = auto_switch_market
 
         # Clients
-        self.gamma = GammaClient()
         self.ws: Optional[MarketWebSocket] = None
 
         # State
@@ -296,7 +295,7 @@ class MarketManager:
         Returns:
             MarketInfo if found, None otherwise
         """
-        market_data = self.gamma.get_market_info(self.coin)
+        market_data = get_current_15m_market_info(self.coin)
 
         if not market_data:
             return None

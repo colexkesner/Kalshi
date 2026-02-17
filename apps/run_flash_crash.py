@@ -93,17 +93,24 @@ def main():
     private_key = os.environ.get("POLY_PRIVATE_KEY")
     safe_address = os.environ.get("POLY_SAFE_ADDRESS")
 
-    if not private_key or not safe_address:
-        print(f"{Colors.RED}Error: POLY_PRIVATE_KEY and POLY_SAFE_ADDRESS must be set{Colors.RESET}")
-        print("Set them in .env file or export as environment variables")
-        sys.exit(1)
-
     # Create bot
     config = Config.from_env()
+    if not safe_address:
+        print(f"{Colors.RED}Error: POLY_SAFE_ADDRESS must be set{Colors.RESET}")
+        sys.exit(1)
+
+    if not config.dry_run and not private_key:
+        print(f"{Colors.RED}Error: POLY_PRIVATE_KEY is required when DRY_RUN is false{Colors.RESET}")
+        sys.exit(1)
+
     bot = TradingBot(config=config, private_key=private_key)
 
     if not bot.is_initialized():
         print(f"{Colors.RED}Error: Failed to initialize bot{Colors.RESET}")
+        sys.exit(1)
+
+    if not bot.venue:
+        print(f"{Colors.RED}Error: Venue initialization failed{Colors.RESET}")
         sys.exit(1)
 
     # Create strategy config
@@ -131,7 +138,7 @@ def main():
     print()
 
     # Create and run strategy
-    strategy = FlashCrashStrategy(bot=bot, config=strategy_config)
+    strategy = FlashCrashStrategy(venue=bot.venue, config=strategy_config)
 
     try:
         asyncio.run(strategy.run())
