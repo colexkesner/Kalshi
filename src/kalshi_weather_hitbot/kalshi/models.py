@@ -16,31 +16,47 @@ class OrderBookTop:
     no_ask_size: int = 0
 
 
-def _price_to_cents(value: Any) -> int | None:
+def _to_int(value: Any) -> int | None:
     if value is None:
         return None
     if isinstance(value, int):
         return value
     if isinstance(value, float):
-        return int(round(value * 100))
-    if isinstance(value, str):
-        if value.replace(".", "", 1).isdigit():
-            if "." in value:
-                return int(round(float(value) * 100))
-            return int(value)
+        return int(round(value))
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        return int(value)
     return None
 
 
-def normalize_orderbook(book: dict[str, Any]) -> OrderBookTop:
-    yes = book.get("yes", {})
-    no = book.get("no", {})
+def _best_bid(levels: Any) -> tuple[int | None, int]:
+    if not isinstance(levels, list) or not levels:
+        return None, 0
+    raw = levels[-1]
+    if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+        return None, 0
+    price = _to_int(raw[0])
+    size = _to_int(raw[1]) or 0
+    return price, size
+
+
+def normalize_orderbook(response: dict[str, Any]) -> OrderBookTop:
+    book = response.get("orderbook") if isinstance(response.get("orderbook"), dict) else response
+    yes_levels = book.get("yes", []) if isinstance(book, dict) else []
+    no_levels = book.get("no", []) if isinstance(book, dict) else []
+
+    best_yes_bid, yes_bid_size = _best_bid(yes_levels)
+    best_no_bid, no_bid_size = _best_bid(no_levels)
+
+    best_yes_ask = (100 - best_no_bid) if best_no_bid is not None else None
+    best_no_ask = (100 - best_yes_bid) if best_yes_bid is not None else None
+
     return OrderBookTop(
-        best_yes_bid_cents=_price_to_cents(yes.get("bid_dollars") or yes.get("bid")),
-        best_yes_ask_cents=_price_to_cents(yes.get("ask_dollars") or yes.get("ask")),
-        best_no_bid_cents=_price_to_cents(no.get("bid_dollars") or no.get("bid")),
-        best_no_ask_cents=_price_to_cents(no.get("ask_dollars") or no.get("ask")),
-        yes_bid_size=int(yes.get("bid_size") or 0),
-        yes_ask_size=int(yes.get("ask_size") or 0),
-        no_bid_size=int(no.get("bid_size") or 0),
-        no_ask_size=int(no.get("ask_size") or 0),
+        best_yes_bid_cents=best_yes_bid,
+        best_yes_ask_cents=best_yes_ask,
+        best_no_bid_cents=best_no_bid,
+        best_no_ask_cents=best_no_ask,
+        yes_bid_size=yes_bid_size,
+        yes_ask_size=no_bid_size,
+        no_bid_size=no_bid_size,
+        no_ask_size=yes_bid_size,
     )

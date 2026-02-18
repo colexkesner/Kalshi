@@ -88,6 +88,10 @@ class KalshiClient:
     def place_order(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/trade-api/v2/portfolio/orders", json_body=payload, authenticated=True)
 
+    def get_positions(self) -> list[dict[str, Any]]:
+        payload = self._request("GET", "/trade-api/v2/portfolio/positions", authenticated=True)
+        return payload.get("positions", [])
+
     def list_orders(self, status: str = "open") -> list[dict[str, Any]]:
         payload = self._request("GET", "/trade-api/v2/portfolio/orders", params={"status": status}, authenticated=True)
         return payload.get("orders", [])
