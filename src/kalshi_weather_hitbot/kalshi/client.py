@@ -68,8 +68,13 @@ class KalshiClient:
             raise APIError(f"API error {response.status_code}: {response.text}")
         return response.json() if response.text else {}
 
-    def list_series(self, tags: str = "Weather") -> list[dict[str, Any]]:
-        payload = self._request("GET", "/trade-api/v2/series", params={"tags": tags})
+    def list_series(self, tags: str | None = "Weather", category: str | None = None) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {}
+        if tags:
+            params["tags"] = tags
+        if category:
+            params["category"] = category
+        payload = self._request("GET", "/trade-api/v2/series", params=params or None)
         return payload.get("series", [])
 
     def list_markets(self, series_ticker: str, status: str = "open", limit: int = 100) -> list[dict[str, Any]]:

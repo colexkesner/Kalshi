@@ -27,6 +27,7 @@ risk:
   enable_exit_sells: true
   maker_time_in_force: good_till_canceled
   taker_time_in_force: immediate_or_cancel
+  send_price_in_dollars: true
 data:
   cache_ttl_seconds: 60
   aviationweather_base_url: https://aviationweather.gov

@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from kalshi_weather_hitbot.config import AppConfig, EnvSettings, load_yaml_config, save_yaml_config
+from kalshi_weather_hitbot.data.city_bootstrap import build_city_mapping, dump_city_mapping_yaml
 from kalshi_weather_hitbot.data.city_mapping import load_city_mapping
 from kalshi_weather_hitbot.data.metar import MetarClient, max_observed_temp_f
 from kalshi_weather_hitbot.data.nws import NWSClient, max_forecast_temp_f
@@ -27,7 +28,9 @@ from kalshi_weather_hitbot.strategy.risk import (
 )
 from kalshi_weather_hitbot.strategy.screener import climate_window_start, parse_temperature_market
 
-app = typer.Typer(help="Kalshi weather hit-rate bot (safe by default)")
+app = typer.Typer(
+    help="Kalshi weather hit-rate bot. Environment via KALSHI_ENV=demo|production (demo default)."
+)
 console = Console()
 RUNNING = True
 
@@ -71,7 +74,12 @@ def _parse_cap_override(cap: str | None, available_dollars: float, cfg: AppConfi
     return compute_cap_dollars(available_dollars, "dollars", float(cap.strip()))
 
 
+def _cents_to_dollar_str(price_cents: int) -> str:
+    return f"{(price_cents / 100.0):.2f}"
+
+
 def _order_payload(
+    cfg: AppConfig,
     ticker: str,
     decision,
     count: int,
@@ -98,19 +106,56 @@ def _order_payload(
             cycle_key=cycle_key,
         ),
     }
-    if decision.side == "YES":
-        payload["yes_price"] = decision.price_cents
+
+    if cfg.risk.send_price_in_dollars:
+        if decision.side == "YES":
+            payload["yes_price_dollars"] = _cents_to_dollar_str(int(decision.price_cents))
+        else:
+            payload["no_price_dollars"] = _cents_to_dollar_str(int(decision.price_cents))
     else:
-        payload["no_price"] = decision.price_cents
+        if decision.side == "YES":
+            payload["yes_price"] = decision.price_cents
+        else:
+            payload["no_price"] = decision.price_cents
+
     if decision.action == "SELL":
         payload["reduce_only"] = True
     return payload
 
 
+def _is_high_temp_series(series_ticker: str) -> bool:
+    return "HIGHTEMP" in series_ticker.upper() or "HIGH-TEMP" in series_ticker.upper()
+
+
+@app.command("bootstrap-cities")
+def bootstrap_cities(
+    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite output file if it exists."),
+    out: str = typer.Option("configs/cities.yaml", "--out", help="Destination YAML file."),
+    category: str = typer.Option("Climate", "--category", help="Kalshi series category filter."),
+) -> None:
+    cfg = _load_cfg()
+    client = KalshiClient(cfg)
+    try:
+        series = client.list_series(tags=None, category=category)
+    except Exception as exc:
+        raise typer.Exit(f"bootstrap-cities failed: {exc}")
+    mapping = build_city_mapping(series)
+    yaml_text = dump_city_mapping_yaml(mapping)
+
+    out_path = Path(out)
+    if out_path.exists() and not overwrite:
+        raise typer.Exit(f"{out_path} exists. Re-run with --overwrite.")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(yaml_text)
+
+    DB(cfg.db_path).save_city_mapping_snapshot(yaml_text=yaml_text, source="bootstrap-cities")
+    console.print(f"Wrote {len(mapping)} city mappings to {out_path}")
+
+
 @app.command()
 def init() -> None:
     """Interactive first-run setup."""
-    env = typer.prompt("Environment", default="demo")
+    env = typer.prompt("Environment (demo|production)", default="demo")
     api_key_id = typer.prompt("Kalshi API key id", default="")
     private_key_path = typer.prompt("Kalshi private key path", default="./secrets/kalshi.key")
 
@@ -138,7 +183,7 @@ def init() -> None:
     config_path = Path("./configs/config.yaml")
     save_yaml_config(config_path, cfg)
     DB(cfg.db_path).save_capital(cap_mode, cap_value, derived)
-    console.print(f"Wrote config to {config_path}. Copy to ~/.kalshi_weather_hitbot/config.yaml if desired.")
+    console.print(f"Wrote config to {config_path}.")
 
 
 def _scan_once(cfg: AppConfig) -> list[dict]:
@@ -151,53 +196,59 @@ def _scan_once(cfg: AppConfig) -> list[dict]:
     if not cities:
         cities = load_city_mapping(Path("./configs/cities.example.yaml"))
 
-    series = client.list_series(tags=cfg.scan.tags)
     out = []
-    for s in series[: cfg.scan.limit_series]:
-        for m in client.list_markets(s.get("ticker", ""), limit=cfg.scan.limit_markets):
-            parsed = parse_temperature_market(m)
-            if not parsed:
+    for city_key, city in cities.items():
+        if city.get("lat") is None or city.get("lon") is None or not city.get("tz"):
+            continue
+        if not city.get("icao_station"):
+            continue
+
+        series_tickers = city.get("kalshi_series_tickers") or []
+        for series_ticker in series_tickers:
+            if not _is_high_temp_series(series_ticker):
                 continue
-            city = cities.get(parsed.city_key or "")
-            if not city:
-                continue
-            db.insert_market_snapshot(m)
-            now_utc = datetime.now(timezone.utc)
-            close_ts = parsed.close_ts
-            hours_to_close = (close_ts - now_utc).total_seconds() / 3600
-            if hours_to_close < cfg.risk.min_hours_to_close or hours_to_close > cfg.risk.max_hours_to_close:
-                continue
-            start_ts = climate_window_start(close_ts, city["tz"])
-            metars = metar.fetch_metar(city["icao_station"])
-            obs_max = max_observed_temp_f(metars, start_ts, now_utc)
-            if obs_max is None:
-                continue
-            periods = nws.hourly_forecast(city["lat"], city["lon"])
-            fc_max = max_forecast_temp_f(periods, now_utc, close_ts) or obs_max
-            lock = evaluate_lock(
-                parsed.bracket_low,
-                parsed.bracket_high,
-                obs_max,
-                fc_max,
-                cfg.risk.safety_bias_f,
-                cfg.risk.lock_yes_probability,
-                cfg.risk.lock_no_probability,
-            )
-            rec = {
-                "market_ticker": m.get("ticker"),
-                "city_key": parsed.city_key,
-                "observed_max": obs_max,
-                "forecast_max_remaining": fc_max,
-                "min_possible": lock.min_possible,
-                "max_possible": lock.max_possible,
-                "lock_status": lock.lock_status,
-                "p_yes": lock.p_yes,
-                "reason": "lock-eval",
-                "hours_to_close": hours_to_close,
-                "close_ts": close_ts.isoformat(),
-            }
-            db.insert_evaluation(rec)
-            out.append(rec)
+            markets = client.list_markets(series_ticker=series_ticker, limit=cfg.scan.limit_markets)
+            for m in markets:
+                parsed = parse_temperature_market(m)
+                if not parsed:
+                    continue
+                db.insert_market_snapshot(m)
+                now_utc = datetime.now(timezone.utc)
+                close_ts = parsed.close_ts
+                hours_to_close = (close_ts - now_utc).total_seconds() / 3600
+                if hours_to_close < cfg.risk.min_hours_to_close or hours_to_close > cfg.risk.max_hours_to_close:
+                    continue
+                start_ts = climate_window_start(close_ts, city["tz"])
+                metars = metar.fetch_metar(city["icao_station"])
+                obs_max = max_observed_temp_f(metars, start_ts, now_utc)
+                if obs_max is None:
+                    continue
+                periods = nws.hourly_forecast(float(city["lat"]), float(city["lon"]))
+                fc_max = max_forecast_temp_f(periods, now_utc, close_ts) or obs_max
+                lock = evaluate_lock(
+                    parsed.bracket_low,
+                    parsed.bracket_high,
+                    obs_max,
+                    fc_max,
+                    cfg.risk.safety_bias_f,
+                    cfg.risk.lock_yes_probability,
+                    cfg.risk.lock_no_probability,
+                )
+                rec = {
+                    "market_ticker": m.get("ticker"),
+                    "city_key": city_key,
+                    "observed_max": obs_max,
+                    "forecast_max_remaining": fc_max,
+                    "min_possible": lock.min_possible,
+                    "max_possible": lock.max_possible,
+                    "lock_status": lock.lock_status,
+                    "p_yes": lock.p_yes,
+                    "reason": "lock-eval",
+                    "hours_to_close": hours_to_close,
+                    "close_ts": close_ts.isoformat(),
+                }
+                db.insert_evaluation(rec)
+                out.append(rec)
     return out
 
 
@@ -277,6 +328,7 @@ def run(
                         continue
                     cycle_key = f"EXIT-{datetime.now(timezone.utc).strftime('%Y%m%d')}"
                     exit_order = _order_payload(
+                        cfg=cfg,
                         ticker=ticker,
                         decision=exit_decision,
                         count=int(position.get("contracts") or position.get("position") or 1),
@@ -292,6 +344,11 @@ def run(
                     resp = client.place_order(exit_order)
                     console.print(resp)
                     db.insert_order(ticker, exit_order["client_order_id"], exit_order, resp, "SUBMITTED")
+
+            if cfg.risk.strategy_mode == "MAX_CYCLES" and current_exposure > cap_dollars:
+                console.print("MAX_CYCLES: skipping new entries because current exposure exceeds cap.")
+                time.sleep(int(interval_seconds))
+                continue
 
             for c in candidates:
                 if c["lock_status"] == "UNLOCKED":
@@ -315,6 +372,7 @@ def run(
 
                 close_key = datetime.fromisoformat(c["close_ts"]).strftime("%Y%m%d")
                 order = _order_payload(
+                    cfg=cfg,
                     ticker=c["market_ticker"],
                     decision=decision,
                     count=1,

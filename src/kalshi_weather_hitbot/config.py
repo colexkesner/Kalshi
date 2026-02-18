@@ -34,6 +34,7 @@ class RiskConfig(BaseModel):
     enable_exit_sells: bool = True
     maker_time_in_force: str = "good_till_canceled"
     taker_time_in_force: str = "immediate_or_cancel"
+    send_price_in_dollars: bool = True
 
 
 class DataConfig(BaseModel):

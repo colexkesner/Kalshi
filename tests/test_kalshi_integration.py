@@ -1,4 +1,5 @@
 from kalshi_weather_hitbot.cli import _available_dollars, _order_payload
+from kalshi_weather_hitbot.config import AppConfig
 from kalshi_weather_hitbot.kalshi.models import normalize_orderbook
 from kalshi_weather_hitbot.strategy.execution import ExecutionDecision
 from kalshi_weather_hitbot.strategy.risk import compute_positions_exposure, enforce_cap
@@ -23,12 +24,14 @@ def test_orderbook_normalization_bids_only():
 
 
 def test_create_order_payload_yes_buy_and_no_buy():
+    cfg = AppConfig()
     yes_buy = ExecutionDecision(should_trade=True, side="YES", action="BUY", price_cents=42)
     no_buy = ExecutionDecision(should_trade=True, side="NO", action="BUY", price_cents=58)
 
     yes_payload = _order_payload(
-        "TEST-YES",
-        yes_buy,
+        cfg=cfg,
+        ticker="TEST-YES",
+        decision=yes_buy,
         count=1,
         tif="good_till_canceled",
         post_only=True,
@@ -36,8 +39,9 @@ def test_create_order_payload_yes_buy_and_no_buy():
         cycle_key="ENTRY-20240101",
     )
     no_payload = _order_payload(
-        "TEST-NO",
-        no_buy,
+        cfg=cfg,
+        ticker="TEST-NO",
+        decision=no_buy,
         count=1,
         tif="good_till_canceled",
         post_only=True,
@@ -48,14 +52,14 @@ def test_create_order_payload_yes_buy_and_no_buy():
     assert yes_payload["side"] == "yes"
     assert yes_payload["action"] == "buy"
     assert yes_payload["count_fp"] == "1.00"
-    assert "yes_price" in yes_payload
-    assert "no_price" not in yes_payload
+    assert "yes_price_dollars" in yes_payload
+    assert "no_price_dollars" not in yes_payload
 
     assert no_payload["side"] == "no"
     assert no_payload["action"] == "buy"
     assert no_payload["count_fp"] == "1.00"
-    assert "no_price" in no_payload
-    assert "yes_price" not in no_payload
+    assert "no_price_dollars" in no_payload
+    assert "yes_price_dollars" not in no_payload
 
 
 def test_balance_parsing_cents():

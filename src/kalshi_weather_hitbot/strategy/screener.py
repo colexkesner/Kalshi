@@ -8,7 +8,6 @@ from zoneinfo import ZoneInfo
 
 @dataclass
 class ParsedMarket:
-    city_key: str | None
     bracket_low: float | None
     bracket_high: float | None
     close_ts: datetime
@@ -20,12 +19,13 @@ BRACKET_PATTERNS = [
 ]
 
 
-def _extract_city(text: str) -> str | None:
-    lower = text.lower()
-    for key in ["nyc", "chicago", "miami", "austin"]:
-        if key in lower:
-            return key
-    return None
+def _parse_strike(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _parse_strike(value: object) -> float | None:
@@ -59,7 +59,7 @@ def parse_temperature_market(market: dict) -> ParsedMarket | None:
     close_dt = datetime.fromisoformat(close_time.replace("Z", "+00:00")).astimezone(timezone.utc)
     if low is None or high is None:
         return None
-    return ParsedMarket(city_key=_extract_city(text), bracket_low=low, bracket_high=high, close_ts=close_dt)
+    return ParsedMarket(bracket_low=low, bracket_high=high, close_ts=close_dt)
 
 
 def _is_dst(ts_local: datetime) -> bool:

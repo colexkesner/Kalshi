@@ -1,40 +1,57 @@
 # kalshi-weather-hitbot
 
-A safe-by-default **Kalshi** weather bot (daily high-temperature markets) with conservative lock logic and optional profit-cycling mode.
+A safe-by-default **Kalshi** climate/weather bot focused on high hit-rate, lock-only execution.
+
+## Environment + credentials
+Set:
+- `KALSHI_ENV=demo|production` (default demo)
+- `KALSHI_API_KEY_ID`
+- `KALSHI_PRIVATE_KEY_PATH`
+
+Base URLs are selected automatically from `KALSHI_ENV`:
+- demo: `https://demo-api.kalshi.co`
+- production: `https://api.elections.kalshi.com`
 
 ## Install
+### macOS / Linux
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .[dev]
-cp configs/config.example.yaml configs/config.yaml
-cp configs/cities.example.yaml configs/cities.yaml
 ```
 
-## Credentials
-For authenticated endpoints and live orders:
-- `KALSHI_API_KEY_ID`
-- `KALSHI_PRIVATE_KEY_PATH` (downloaded Kalshi private key file)
+### Windows (PowerShell)
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -e .[dev]
+```
 
-Environments:
-- Demo: `https://demo-api.kalshi.co`
-- Production: `https://api.elections.kalshi.com`
+## Bootstrap all climate cities
+Generate a station-accurate mapping from Kalshi Climate series and contract terms:
+```bash
+kalshi-hitbot bootstrap-cities --overwrite --out configs/cities.yaml --category Climate
+```
 
-## Kalshi signing
-Sign: `timestamp_ms + METHOD + PATH_WITHOUT_QUERY` using RSA-PSS SHA256.
+This command:
+- pulls `/trade-api/v2/series?category=Climate`
+- parses contract terms for location + WFO hints
+- writes `configs/cities.yaml`
+- snapshots YAML to SQLite (`city_mapping_snapshots`)
 
 ## Strategy modes
-- `HOLD_TO_SETTLEMENT` (default): enter locked outcomes and hold.
-- `MAX_CYCLES`: try exits first (reduce-only sells), then entries.
+- `HOLD_TO_SETTLEMENT` (default)
+- `MAX_CYCLES` (exits first, reduce-only, then entries)
 
-## Safety defaults
-- DRY-RUN by default.
-- Live requires `--enable-trading`.
-- Production live requires typing: `I_UNDERSTAND_THIS_WILL_TRADE_REAL_MONEY`.
+Safety defaults:
+- DRY-RUN by default
+- `--enable-trading` required for live submission
+- production additionally requires typing confirmation string
 
 ## CLI
 ```bash
 kalshi-hitbot init
+kalshi-hitbot bootstrap-cities --overwrite
 kalshi-hitbot scan
 kalshi-hitbot run
 kalshi-hitbot run --cap 150
@@ -42,9 +59,7 @@ kalshi-hitbot run --cap 20%
 kalshi-hitbot run --enable-trading
 ```
 
-## Testing
+## Tests
 ```bash
 pytest
 ```
-
-No `PYTHONPATH` hack is needed.
