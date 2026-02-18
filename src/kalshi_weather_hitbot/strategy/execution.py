@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -78,3 +79,17 @@ def select_exit_order(position: dict[str, Any], book: OrderBookTop, risk: RiskCo
 
 def build_client_order_id(market_ticker: str) -> str:
     return f"hitbot-{market_ticker}-{uuid.uuid4().hex[:12]}"
+
+
+def build_client_order_id_deterministic(
+    market_ticker: str,
+    side: str,
+    action: str,
+    price_cents: int,
+    count: int,
+    strategy_mode: str,
+    cycle_key: str,
+) -> str:
+    raw = f"{market_ticker}|{side}|{action}|{price_cents}|{count}|{strategy_mode}|{cycle_key}"
+    digest = hashlib.sha256(raw.encode()).hexdigest()[:20]
+    return f"hitbot-{market_ticker}-{digest}"

@@ -96,5 +96,8 @@ class KalshiClient:
         payload = self._request("GET", "/trade-api/v2/portfolio/orders", params={"status": status}, authenticated=True)
         return payload.get("orders", [])
 
+    def amend_order(self, order_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", f"/trade-api/v2/portfolio/orders/{order_id}/amend", json_body=payload, authenticated=True)
+
     def cancel_order(self, order_id: str) -> dict[str, Any]:
         return self._request("DELETE", f"/trade-api/v2/portfolio/orders/{order_id}", authenticated=True)

@@ -16,7 +16,8 @@ from kalshi_weather_hitbot.data.nws import NWSClient, max_forecast_temp_f
 from kalshi_weather_hitbot.db import DB
 from kalshi_weather_hitbot.kalshi.client import APIError, KalshiClient
 from kalshi_weather_hitbot.kalshi.models import normalize_orderbook
-from kalshi_weather_hitbot.strategy.execution import build_client_order_id, select_exit_order, select_order
+from kalshi_weather_hitbot.strategy.execution import build_client_order_id_deterministic, select_exit_order, select_order
+from kalshi_weather_hitbot.strategy.maker import maker_first_entry_price
 from kalshi_weather_hitbot.strategy.model import evaluate_lock
 from kalshi_weather_hitbot.strategy.risk import (
     compute_cap_dollars,
@@ -70,15 +71,32 @@ def _parse_cap_override(cap: str | None, available_dollars: float, cfg: AppConfi
     return compute_cap_dollars(available_dollars, "dollars", float(cap.strip()))
 
 
-def _order_payload(ticker: str, decision, count: int, tif: str, post_only: bool) -> dict:
+def _order_payload(
+    ticker: str,
+    decision,
+    count: int,
+    tif: str,
+    post_only: bool,
+    strategy_mode: str,
+    cycle_key: str,
+) -> dict:
     payload = {
         "ticker": ticker,
         "side": decision.side.lower(),
         "action": decision.action.lower(),
         "count": count,
+        "count_fp": f"{count:.2f}",
         "time_in_force": tif,
         "post_only": post_only,
-        "client_order_id": build_client_order_id(ticker),
+        "client_order_id": build_client_order_id_deterministic(
+            market_ticker=ticker,
+            side=decision.side,
+            action=decision.action,
+            price_cents=int(decision.price_cents),
+            count=count,
+            strategy_mode=strategy_mode,
+            cycle_key=cycle_key,
+        ),
     }
     if decision.side == "YES":
         payload["yes_price"] = decision.price_cents
@@ -95,7 +113,6 @@ def init() -> None:
     env = typer.prompt("Environment", default="demo")
     api_key_id = typer.prompt("Kalshi API key id", default="")
     private_key_path = typer.prompt("Kalshi private key path", default="./secrets/kalshi.key")
-    _ = typer.prompt("Optional OpenAI API key (press enter to skip)", default="", show_default=False)
 
     cfg = AppConfig(env=env, base_url=_choose_base(env), api_key_id=api_key_id, private_key_path=private_key_path)
     client = KalshiClient(cfg)
@@ -150,7 +167,7 @@ def _scan_once(cfg: AppConfig) -> list[dict]:
             hours_to_close = (close_ts - now_utc).total_seconds() / 3600
             if hours_to_close < cfg.risk.min_hours_to_close or hours_to_close > cfg.risk.max_hours_to_close:
                 continue
-            start_ts = climate_window_start(close_ts)
+            start_ts = climate_window_start(close_ts, city["tz"])
             metars = metar.fetch_metar(city["icao_station"])
             obs_max = max_observed_temp_f(metars, start_ts, now_utc)
             if obs_max is None:
@@ -177,6 +194,7 @@ def _scan_once(cfg: AppConfig) -> list[dict]:
                 "p_yes": lock.p_yes,
                 "reason": "lock-eval",
                 "hours_to_close": hours_to_close,
+                "close_ts": close_ts.isoformat(),
             }
             db.insert_evaluation(rec)
             out.append(rec)
@@ -257,12 +275,15 @@ def run(
                     exit_decision = select_exit_order(position, book, cfg.risk)
                     if not exit_decision.should_trade:
                         continue
+                    cycle_key = f"EXIT-{datetime.now(timezone.utc).strftime('%Y%m%d')}"
                     exit_order = _order_payload(
                         ticker=ticker,
                         decision=exit_decision,
                         count=int(position.get("contracts") or position.get("position") or 1),
                         tif=cfg.risk.taker_time_in_force,
                         post_only=False,
+                        strategy_mode=cfg.risk.strategy_mode,
+                        cycle_key=cycle_key,
                     )
                     if not enable_trading:
                         console.print(f"[DRY-RUN EXIT] {exit_order}")
@@ -282,16 +303,25 @@ def run(
                 if not decision.should_trade:
                     continue
 
+                target_side = decision.side
+                max_allowed = int((c["p_yes"] - cfg.risk.edge_buffer) * 100) if target_side == "YES" else int(((1 - c["p_yes"]) - cfg.risk.edge_buffer) * 100)
+                maker = maker_first_entry_price(target_side, book, max_allowed, cfg.risk)
+                if maker.should_place and maker.price_cents is not None:
+                    decision.price_cents = maker.price_cents
+
                 order_notional = decision.price_cents / 100
                 if not enforce_cap(current_exposure, order_notional, cap_dollars):
                     continue
 
+                close_key = datetime.fromisoformat(c["close_ts"]).strftime("%Y%m%d")
                 order = _order_payload(
                     ticker=c["market_ticker"],
                     decision=decision,
                     count=1,
                     tif=cfg.risk.maker_time_in_force,
                     post_only=True,
+                    strategy_mode=cfg.risk.strategy_mode,
+                    cycle_key=f"ENTRY-{close_key}",
                 )
                 if not enable_trading:
                     console.print(f"[DRY-RUN] {order}")

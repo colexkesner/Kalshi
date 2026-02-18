@@ -26,16 +26,34 @@ def test_create_order_payload_yes_buy_and_no_buy():
     yes_buy = ExecutionDecision(should_trade=True, side="YES", action="BUY", price_cents=42)
     no_buy = ExecutionDecision(should_trade=True, side="NO", action="BUY", price_cents=58)
 
-    yes_payload = _order_payload("TEST-YES", yes_buy, count=1, tif="good_till_canceled", post_only=True)
-    no_payload = _order_payload("TEST-NO", no_buy, count=1, tif="good_till_canceled", post_only=True)
+    yes_payload = _order_payload(
+        "TEST-YES",
+        yes_buy,
+        count=1,
+        tif="good_till_canceled",
+        post_only=True,
+        strategy_mode="HOLD_TO_SETTLEMENT",
+        cycle_key="ENTRY-20240101",
+    )
+    no_payload = _order_payload(
+        "TEST-NO",
+        no_buy,
+        count=1,
+        tif="good_till_canceled",
+        post_only=True,
+        strategy_mode="HOLD_TO_SETTLEMENT",
+        cycle_key="ENTRY-20240101",
+    )
 
     assert yes_payload["side"] == "yes"
     assert yes_payload["action"] == "buy"
+    assert yes_payload["count_fp"] == "1.00"
     assert "yes_price" in yes_payload
     assert "no_price" not in yes_payload
 
     assert no_payload["side"] == "no"
     assert no_payload["action"] == "buy"
+    assert no_payload["count_fp"] == "1.00"
     assert "no_price" in no_payload
     assert "yes_price" not in no_payload
 
