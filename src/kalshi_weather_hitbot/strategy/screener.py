@@ -28,6 +28,15 @@ def _parse_strike(value: object) -> float | None:
         return None
 
 
+def _parse_strike(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_temperature_market(market: dict) -> ParsedMarket | None:
     text = " ".join(
         str(market.get(k, ""))
