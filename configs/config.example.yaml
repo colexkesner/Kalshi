@@ -1,0 +1,30 @@
+env: demo
+base_url: https://demo-api.kalshi.co
+user_agent: kalshi-weather-hitbot/0.1 (+local)
+api_key_id: "YOUR_API_KEY_ID"
+private_key_path: "./secrets/kalshi.key"
+db_path: "./kalshi_weather_hitbot.db"
+capital:
+  cap_mode: dollars # dollars|percent
+  cap_value: 100.0
+risk:
+  p_confidence_gate: 0.90
+  lock_yes_probability: 0.99
+  lock_no_probability: 0.01
+  edge_buffer: 0.02
+  safety_bias_f: 3.0
+  min_hours_to_close: 0.25
+  max_hours_to_close: 6.0
+  max_per_market_notional: 50.0
+  max_open_positions: 5
+  max_orders_per_market: 2
+  min_liquidity_contracts: 5
+  max_spread_cents: 15
+data:
+  cache_ttl_seconds: 60
+  aviationweather_base_url: https://aviationweather.gov
+  nws_base_url: https://api.weather.gov
+scan:
+  tags: Weather
+  limit_series: 30
+  limit_markets: 100
