@@ -1,27 +1,20 @@
 from __future__ import annotations
 
+import gzip
+import json
+import logging
 import re
+import time
 from dataclasses import dataclass
+from io import BytesIO
+from pathlib import Path
 from typing import Any
 
 import requests
 import yaml
 
 
-AIRPORT_LOCATION_TO_ICAO = {
-    "chicago midway": "KMDW",
-    "los angeles airport": "KLAX",
-    "miami international airport": "KMIA",
-    "austin-bergstrom": "KAUS",
-    "austin bergstrom": "KAUS",
-}
-
-ICAO_COORDS = {
-    "KMDW": {"lat": 41.7868, "lon": -87.7522, "tz": "America/Chicago"},
-    "KLAX": {"lat": 33.9425, "lon": -118.4081, "tz": "America/Los_Angeles"},
-    "KMIA": {"lat": 25.7959, "lon": -80.2871, "tz": "America/New_York"},
-    "KAUS": {"lat": 30.1945, "lon": -97.6699, "tz": "America/Chicago"},
-}
+logger = logging.getLogger(__name__)
 
 INCLUDE_PATTERNS = ["highest temperature", "lowest temperature", "snow", "rain"]
 EXCLUDE_PATTERNS = ["volcano", "earthquake", "hurricane", "tornado", "wildfire"]
@@ -65,12 +58,30 @@ def derive_city_key(series_ticker: str, location_name: str | None) -> str:
     return suffix
 
 
+def _norm_text(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def _token_set(text: str) -> set[str]:
+    return {t for t in _norm_text(text).split() if t}
+
+
+def extract_pdf_text(content: bytes) -> str:
+    from pypdf import PdfReader
+
+    reader = PdfReader(BytesIO(content))
+    parts = [(page.extract_text() or "") for page in reader.pages]
+    return "\n".join(parts)
+
+
 def _decode_terms_content(resp: requests.Response) -> str:
     ctype = (resp.headers.get("Content-Type") or "").lower()
     if "pdf" in ctype or resp.url.lower().endswith(".pdf"):
-        # Lightweight fallback parser for text-like PDFs; robust parsing can be layered later.
-        raw = resp.content.decode("latin-1", errors="ignore")
-        return re.sub(r"\s+", " ", raw)
+        try:
+            return extract_pdf_text(resp.content)
+        except Exception:
+            raw = resp.content.decode("latin-1", errors="ignore")
+            return re.sub(r"\s+", " ", raw)
     return resp.text
 
 
@@ -79,15 +90,16 @@ def parse_contract_terms_text(text: str) -> ContractTermsInfo:
     wfo_match = re.search(r"wrh/Climate\?wfo=([A-Z]{3})", compact, re.IGNORECASE)
     wfo = wfo_match.group(1).upper() if wfo_match else None
 
+    patterns = [
+        r"(?:Location|Station|Observed at|Observation site)\s*[:\-]\s*([^.;\n]+)",
+        r"recorded\s+at\s+([^.;\n]+)",
+    ]
     location = None
-    loc_match = re.search(r"(?:Location|Station|Observed at|Observation site)\s*[:\-]\s*([^.;\n]+)", compact, re.IGNORECASE)
-    if loc_match:
-        location = loc_match.group(1).strip()
-    if not location:
-        # Common phrasing fallback.
-        fallback = re.search(r"(Central Park, New York|Chicago Midway, IL|Los Angeles Airport, CA|Miami International Airport, FL)", compact, re.IGNORECASE)
-        if fallback:
-            location = fallback.group(1)
+    for pattern in patterns:
+        m = re.search(pattern, compact, re.IGNORECASE)
+        if m:
+            location = m.group(1).strip()
+            break
 
     nws_label = None
     label_match = re.search(r"Location\s*:\s*([^<\n]+)", compact, re.IGNORECASE)
@@ -95,27 +107,100 @@ def parse_contract_terms_text(text: str) -> ContractTermsInfo:
         nws_label = label_match.group(1).strip()
 
     source_type = "nws_climate_daily" if wfo else "metar_nws_combo"
-    return ContractTermsInfo(
-        resolution_location_name=location,
-        resolution_source_type=source_type,
-        nws_wfo=wfo,
-        nws_location_label=nws_label,
-    )
+    return ContractTermsInfo(location, source_type, wfo, nws_label)
 
 
-def resolve_icao(location_name: str | None) -> str | None:
-    if not location_name:
+def _load_station_cache(
+    session: requests.Session,
+    station_cache_url: str,
+    station_cache_path: str,
+    cache_ttl_seconds: int,
+) -> list[dict[str, Any]]:
+    cache_file = Path(station_cache_path)
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    refresh_after = max(cache_ttl_seconds, 86400)
+    should_refresh = (not cache_file.exists()) or (time.time() - cache_file.stat().st_mtime > refresh_after)
+
+    if should_refresh:
+        resp = session.get(station_cache_url, timeout=30)
+        resp.raise_for_status()
+        cache_file.write_bytes(resp.content)
+
+    with gzip.open(cache_file, "rb") as fh:
+        payload = json.loads(fh.read().decode("utf-8"))
+
+    if isinstance(payload, dict) and "features" in payload:
+        out: list[dict[str, Any]] = []
+        for feature in payload.get("features", []):
+            props = feature.get("properties", {})
+            geom = feature.get("geometry", {}).get("coordinates") or [None, None]
+            out.append(
+                {
+                    "icaoId": props.get("icaoId") or props.get("stationIdentifier"),
+                    "name": props.get("name") or "",
+                    "city": props.get("city") or "",
+                    "state": props.get("state") or "",
+                    "lat": geom[1],
+                    "lon": geom[0],
+                }
+            )
+        return out
+
+    return payload if isinstance(payload, list) else []
+
+
+def _resolve_timezone(session: requests.Session, nws_base_url: str, lat: float, lon: float) -> str | None:
+    try:
+        points_url = f"{nws_base_url.rstrip('/')}/points/{lat},{lon}"
+        resp = session.get(points_url, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("properties", {}).get("timeZone")
+    except Exception:
         return None
-    lower = location_name.lower()
-    for key, icao in AIRPORT_LOCATION_TO_ICAO.items():
-        if key in lower:
-            return icao
-    return None
 
 
-def build_city_mapping(series_list: list[dict[str, Any]], downloader: requests.Session | None = None) -> dict[str, Any]:
+def _resolve_station_from_location(location_name: str, station_index: list[dict[str, Any]]) -> dict[str, Any] | None:
+    loc_tokens = _token_set(location_name)
+    best: tuple[int, dict[str, Any]] | None = None
+
+    for station in station_index:
+        name = station.get("name") or ""
+        city = station.get("city") or ""
+        state = station.get("state") or ""
+        icao = station.get("icaoId")
+        lat = station.get("lat")
+        lon = station.get("lon")
+        if not icao or lat is None or lon is None:
+            continue
+
+        bag = f"{name} {city} {state}"
+        bag_norm = _norm_text(bag)
+        score = 0
+        if _norm_text(location_name) == bag_norm or _norm_text(location_name) in bag_norm:
+            score += 100
+        score += len(loc_tokens & _token_set(bag)) * 10
+
+        if score <= 0:
+            continue
+        if best is None or score > best[0]:
+            best = (score, station)
+
+    return best[1] if best else None
+
+
+def build_city_mapping(
+    series_list: list[dict[str, Any]],
+    downloader: requests.Session | None = None,
+    station_cache_url: str = "https://aviationweather.gov/data/cache/stations.cache.json.gz",
+    station_cache_path: str = ".cache/awc/stations.cache.json.gz",
+    cache_ttl_seconds: int = 60,
+    nws_base_url: str = "https://api.weather.gov",
+) -> tuple[dict[str, Any], list[str]]:
     session = downloader or requests.Session()
     mapping: dict[str, Any] = {}
+    needs_manual_override: list[str] = []
+    station_index = _load_station_cache(session, station_cache_url, station_cache_path, cache_ttl_seconds)
 
     for series in series_list:
         if not is_city_climate_series(series):
@@ -131,8 +216,8 @@ def build_city_mapping(series_list: list[dict[str, Any]], downloader: requests.S
                 resp = session.get(terms_url, timeout=20)
                 resp.raise_for_status()
                 terms_info = parse_contract_terms_text(_decode_terms_content(resp))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed parsing contract terms for %s: %s", ticker, exc)
 
         city_key = derive_city_key(ticker, terms_info.resolution_location_name)
         current = mapping.setdefault(
@@ -161,15 +246,19 @@ def build_city_mapping(series_list: list[dict[str, Any]], downloader: requests.S
         if terms_info.nws_location_label:
             current["nws_location_label"] = terms_info.nws_location_label
 
-        icao = resolve_icao(current.get("resolution_location_name"))
-        if icao:
-            current["icao_station"] = icao
-            coords = ICAO_COORDS.get(icao, {})
-            current["lat"] = coords.get("lat")
-            current["lon"] = coords.get("lon")
-            current["tz"] = coords.get("tz")
+        resolved = None
+        if current.get("resolution_location_name"):
+            resolved = _resolve_station_from_location(current["resolution_location_name"], station_index)
+        if resolved:
+            current["icao_station"] = resolved.get("icaoId")
+            current["lat"] = resolved.get("lat")
+            current["lon"] = resolved.get("lon")
+            current["tz"] = _resolve_timezone(session, nws_base_url, float(current["lat"]), float(current["lon"]))
+        else:
+            if city_key not in needs_manual_override:
+                needs_manual_override.append(city_key)
 
-    return mapping
+    return mapping, needs_manual_override
 
 
 def dump_city_mapping_yaml(mapping: dict[str, Any]) -> str:

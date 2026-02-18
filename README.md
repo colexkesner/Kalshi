@@ -35,9 +35,13 @@ kalshi-hitbot bootstrap-cities --overwrite --out configs/cities.yaml --category 
 
 This command:
 - pulls `/trade-api/v2/series?category=Climate`
-- parses contract terms for location + WFO hints
+- parses contract terms PDF/HTML for location + WFO hints
+- resolves ICAO/lat/lon using AviationWeather station cache (`stations.cache.json.gz`)
+- resolves timezone via NWS `points/{lat},{lon}`
 - writes `configs/cities.yaml`
 - snapshots YAML to SQLite (`city_mapping_snapshots`)
+
+If station resolution fails, city stays in YAML and is reported in a manual-override list.
 
 ## Strategy modes
 - `HOLD_TO_SETTLEMENT` (default)

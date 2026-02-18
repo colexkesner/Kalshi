@@ -16,7 +16,7 @@ def test_bootstrap_cities_command_writes_yaml(monkeypatch, tmp_path: Path):
     monkeypatch.setattr("kalshi_weather_hitbot.cli.KalshiClient", FakeClient)
     monkeypatch.setattr(
         "kalshi_weather_hitbot.cli.build_city_mapping",
-        lambda series: {
+        lambda series, **kwargs: ( {
             "chicago": {
                 "kalshi_series_tickers": [series[0]["ticker"]],
                 "resolution_location_name": "Chicago Midway, IL",
@@ -28,7 +28,7 @@ def test_bootstrap_cities_command_writes_yaml(monkeypatch, tmp_path: Path):
                 "lon": -87.7522,
                 "tz": "America/Chicago",
             }
-        },
+        }, [] ),
     )
 
     class FakeDB:

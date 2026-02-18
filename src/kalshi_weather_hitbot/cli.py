@@ -75,7 +75,7 @@ def _parse_cap_override(cap: str | None, available_dollars: float, cfg: AppConfi
 
 
 def _cents_to_dollar_str(price_cents: int) -> str:
-    return f"{(price_cents / 100.0):.2f}"
+    return f"{(price_cents / 100.0):.4f}"
 
 
 def _order_payload(
@@ -139,7 +139,13 @@ def bootstrap_cities(
         series = client.list_series(tags=None, category=category)
     except Exception as exc:
         raise typer.Exit(f"bootstrap-cities failed: {exc}")
-    mapping = build_city_mapping(series)
+    mapping, needs_manual_override = build_city_mapping(
+        series,
+        station_cache_url=cfg.data.awc_station_cache_url,
+        station_cache_path=cfg.data.awc_station_cache_path,
+        cache_ttl_seconds=cfg.data.cache_ttl_seconds,
+        nws_base_url=cfg.data.nws_base_url,
+    )
     yaml_text = dump_city_mapping_yaml(mapping)
 
     out_path = Path(out)
@@ -149,7 +155,11 @@ def bootstrap_cities(
     out_path.write_text(yaml_text)
 
     DB(cfg.db_path).save_city_mapping_snapshot(yaml_text=yaml_text, source="bootstrap-cities")
+    resolved_count = sum(1 for c in mapping.values() if c.get("icao_station") and c.get("lat") is not None and c.get("lon") is not None and c.get("tz"))
     console.print(f"Wrote {len(mapping)} city mappings to {out_path}")
+    console.print(f"Resolved ICAO/lat/lon/tz for {resolved_count} cities")
+    if needs_manual_override:
+        console.print("Needs manual override: " + ", ".join(sorted(needs_manual_override)))
 
 
 @app.command()
@@ -233,6 +243,7 @@ def _scan_once(cfg: AppConfig) -> list[dict]:
                     cfg.risk.safety_bias_f,
                     cfg.risk.lock_yes_probability,
                     cfg.risk.lock_no_probability,
+                    cfg.risk.station_uncertainty_f,
                 )
                 rec = {
                     "market_ticker": m.get("ticker"),

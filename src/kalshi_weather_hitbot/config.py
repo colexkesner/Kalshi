@@ -20,6 +20,7 @@ class RiskConfig(BaseModel):
     lock_no_probability: float = 0.01
     edge_buffer: float = 0.02
     safety_bias_f: float = 3.0
+    station_uncertainty_f: float = 0.5
     min_hours_to_close: float = 0.25
     max_hours_to_close: float = 6.0
     max_per_market_notional: float = 50.0
@@ -41,6 +42,8 @@ class DataConfig(BaseModel):
     cache_ttl_seconds: int = 60
     aviationweather_base_url: str = "https://aviationweather.gov"
     nws_base_url: str = "https://api.weather.gov"
+    awc_station_cache_url: str = "https://aviationweather.gov/data/cache/stations.cache.json.gz"
+    awc_station_cache_path: str = ".cache/awc/stations.cache.json.gz"
 
 
 class ScanConfig(BaseModel):
