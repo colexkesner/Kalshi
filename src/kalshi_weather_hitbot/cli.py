@@ -14,11 +14,16 @@ from kalshi_weather_hitbot.data.city_mapping import load_city_mapping
 from kalshi_weather_hitbot.data.metar import MetarClient, max_observed_temp_f
 from kalshi_weather_hitbot.data.nws import NWSClient, max_forecast_temp_f
 from kalshi_weather_hitbot.db import DB
-from kalshi_weather_hitbot.kalshi.client import KalshiClient
+from kalshi_weather_hitbot.kalshi.client import APIError, KalshiClient
 from kalshi_weather_hitbot.kalshi.models import normalize_orderbook
-from kalshi_weather_hitbot.strategy.execution import build_client_order_id, select_order
+from kalshi_weather_hitbot.strategy.execution import build_client_order_id, select_exit_order, select_order
 from kalshi_weather_hitbot.strategy.model import evaluate_lock
-from kalshi_weather_hitbot.strategy.risk import compute_cap_dollars, enforce_cap
+from kalshi_weather_hitbot.strategy.risk import (
+    compute_cap_dollars,
+    compute_open_orders_exposure,
+    compute_positions_exposure,
+    enforce_cap,
+)
 from kalshi_weather_hitbot.strategy.screener import climate_window_start, parse_temperature_market
 
 app = typer.Typer(help="Kalshi weather hit-rate bot (safe by default)")
@@ -43,11 +48,45 @@ def _load_cfg() -> AppConfig:
         cfg.private_key_path = env.kalshi_private_key_path
     cfg.trading_enabled = env.kalshi_trading_enabled or cfg.trading_enabled
     cfg.db_path = env.kalshi_db_path
+    cfg.env = env.kalshi_env
+    cfg.base_url = _choose_base(cfg.env)
     return cfg
 
 
 def _choose_base(env: str) -> str:
     return "https://api.elections.kalshi.com" if env == "production" else "https://demo-api.kalshi.co"
+
+
+def _available_dollars(balance_data: dict) -> float:
+    return float(balance_data.get("balance") or 0) / 100.0
+
+
+def _parse_cap_override(cap: str | None, available_dollars: float, cfg: AppConfig) -> float:
+    if not cap:
+        return compute_cap_dollars(available_dollars, cfg.capital.cap_mode, cfg.capital.cap_value)
+    if cap.strip().endswith("%"):
+        val = float(cap.strip().replace("%", ""))
+        return compute_cap_dollars(available_dollars, "percent", val)
+    return compute_cap_dollars(available_dollars, "dollars", float(cap.strip()))
+
+
+def _order_payload(ticker: str, decision, count: int, tif: str, post_only: bool) -> dict:
+    payload = {
+        "ticker": ticker,
+        "side": decision.side.lower(),
+        "action": decision.action.lower(),
+        "count": count,
+        "time_in_force": tif,
+        "post_only": post_only,
+        "client_order_id": build_client_order_id(ticker),
+    }
+    if decision.side == "YES":
+        payload["yes_price"] = decision.price_cents
+    else:
+        payload["no_price"] = decision.price_cents
+    if decision.action == "SELL":
+        payload["reduce_only"] = True
+    return payload
 
 
 @app.command()
@@ -61,8 +100,8 @@ def init() -> None:
     cfg = AppConfig(env=env, base_url=_choose_base(env), api_key_id=api_key_id, private_key_path=private_key_path)
     client = KalshiClient(cfg)
 
-    balance_data = client.get_balance() if api_key_id else {"available_balance": 0}
-    available = float(balance_data.get("available_balance_dollars") or balance_data.get("available_balance") or 0)
+    balance_data = client.get_balance() if api_key_id else {"balance": 0}
+    available = _available_dollars(balance_data)
     console.print(f"Available balance: ${available:.2f}")
 
     cap_input = typer.prompt("Enter max starting capital to allocate (e.g., 100 OR 20%)")
@@ -85,7 +124,7 @@ def init() -> None:
     console.print(f"Wrote config to {config_path}. Copy to ~/.kalshi_weather_hitbot/config.yaml if desired.")
 
 
-def _scan_once(cfg: AppConfig, auth_required: bool = False) -> list[dict]:
+def _scan_once(cfg: AppConfig) -> list[dict]:
     db = DB(cfg.db_path)
     client = KalshiClient(cfg)
     metar = MetarClient(cfg.data.aviationweather_base_url, cfg.user_agent, cfg.data.cache_ttl_seconds)
@@ -112,13 +151,21 @@ def _scan_once(cfg: AppConfig, auth_required: bool = False) -> list[dict]:
             if hours_to_close < cfg.risk.min_hours_to_close or hours_to_close > cfg.risk.max_hours_to_close:
                 continue
             start_ts = climate_window_start(close_ts)
-            metars = metar.fetch_metar(city["icao_station"]) 
+            metars = metar.fetch_metar(city["icao_station"])
             obs_max = max_observed_temp_f(metars, start_ts, now_utc)
             if obs_max is None:
                 continue
             periods = nws.hourly_forecast(city["lat"], city["lon"])
             fc_max = max_forecast_temp_f(periods, now_utc, close_ts) or obs_max
-            lock = evaluate_lock(parsed.bracket_low, parsed.bracket_high, obs_max, fc_max, cfg.risk.safety_bias_f, cfg.risk.lock_yes_probability, cfg.risk.lock_no_probability)
+            lock = evaluate_lock(
+                parsed.bracket_low,
+                parsed.bracket_high,
+                obs_max,
+                fc_max,
+                cfg.risk.safety_bias_f,
+                cfg.risk.lock_yes_probability,
+                cfg.risk.lock_no_probability,
+            )
             rec = {
                 "market_ticker": m.get("ticker"),
                 "city_key": parsed.city_key,
@@ -129,6 +176,7 @@ def _scan_once(cfg: AppConfig, auth_required: bool = False) -> list[dict]:
                 "lock_status": lock.lock_status,
                 "p_yes": lock.p_yes,
                 "reason": "lock-eval",
+                "hours_to_close": hours_to_close,
             }
             db.insert_evaluation(rec)
             out.append(rec)
@@ -160,7 +208,11 @@ def scan() -> None:
 
 
 @app.command()
-def run(enable_trading: bool = typer.Option(False, help="Actually submit orders"), interval_seconds: int = 300) -> None:
+def run(
+    enable_trading: bool = typer.Option(False, help="Actually submit orders"),
+    interval_seconds: int = 300,
+    cap: str | None = typer.Option(None, help="Temporary capital cap override (e.g. 150 or 20%)"),
+) -> None:
     """Run main loop; defaults to dry-run."""
     cfg = _load_cfg()
     db = DB(cfg.db_path)
@@ -171,45 +223,93 @@ def run(enable_trading: bool = typer.Option(False, help="Actually submit orders"
         if typed.strip() != "I_UNDERSTAND_THIS_WILL_TRADE_REAL_MONEY":
             raise typer.Exit("Confirmation mismatch; aborting.")
 
+    if cap:
+        console.print(f"Using run-time capital cap override: {cap} (config file unchanged).")
+
     console.print("DRY-RUN mode" if not enable_trading else "TRADING ENABLED")
     while RUNNING:
-        candidates = _scan_once(cfg)
-        for c in candidates:
-            if c["lock_status"] == "UNLOCKED":
-                continue
-            book = normalize_orderbook(client.get_orderbook(c["market_ticker"]))
-            decision = select_order(c["lock_status"], c["p_yes"], book, cfg.risk)
-            if not decision.should_trade:
-                continue
+        try:
+            balance = client.get_balance() if cfg.api_key_id else {"balance": 0}
+            available = _available_dollars(balance)
+            cap_dollars = _parse_cap_override(cap, available, cfg)
 
-            balance = client.get_balance() if cfg.api_key_id else {"available_balance": 0}
-            available = float(balance.get("available_balance_dollars") or balance.get("available_balance") or 0)
-            cap_dollars = compute_cap_dollars(available, cfg.capital.cap_mode, cfg.capital.cap_value)
-            order_notional = decision.price_cents / 100
-            if not enforce_cap(0, order_notional, cap_dollars):
-                continue
+            positions = client.get_positions() if cfg.api_key_id else []
+            open_orders = client.list_orders(status="open") if cfg.api_key_id else []
+            current_exposure = compute_positions_exposure(positions) + compute_open_orders_exposure(open_orders)
 
-            order = {
-                "ticker": c["market_ticker"],
-                "side": decision.side,
-                "action": decision.action,
-                "type": "limit",
-                "price": decision.price_cents,
-                "count": 1,
-                "post_only": True,
-                "client_order_id": build_client_order_id(c["market_ticker"]),
-            }
-            if not enable_trading:
-                console.print(f"[DRY-RUN] {order}")
-                db.insert_order(c["market_ticker"], order["client_order_id"], order, {"dry_run": True}, "DRY_RUN")
-                continue
-            resp = client.place_order(order)
-            console.print(resp)
-            db.insert_order(c["market_ticker"], order["client_order_id"], order, resp, "SUBMITTED")
+            candidates = _scan_once(cfg)
+
+            if cfg.risk.strategy_mode == "MAX_CYCLES" and cfg.risk.enable_exit_sells:
+                for position in positions:
+                    ticker = position.get("ticker") or position.get("market_ticker")
+                    if not ticker:
+                        continue
+                    candidate = next((c for c in candidates if c.get("market_ticker") == ticker), None)
+                    if not candidate:
+                        continue
+                    if candidate["hours_to_close"] > cfg.risk.max_exit_hours_to_close:
+                        continue
+                    if (candidate["lock_status"] == "LOCKED_YES" and str(position.get("side", "")).upper() != "YES") or (
+                        candidate["lock_status"] == "LOCKED_NO" and str(position.get("side", "")).upper() != "NO"
+                    ):
+                        continue
+                    book = normalize_orderbook(client.get_orderbook(ticker))
+                    exit_decision = select_exit_order(position, book, cfg.risk)
+                    if not exit_decision.should_trade:
+                        continue
+                    exit_order = _order_payload(
+                        ticker=ticker,
+                        decision=exit_decision,
+                        count=int(position.get("contracts") or position.get("position") or 1),
+                        tif=cfg.risk.taker_time_in_force,
+                        post_only=False,
+                    )
+                    if not enable_trading:
+                        console.print(f"[DRY-RUN EXIT] {exit_order}")
+                        db.insert_order(ticker, exit_order["client_order_id"], exit_order, {"dry_run": True}, "DRY_RUN")
+                        continue
+                    resp = client.place_order(exit_order)
+                    console.print(resp)
+                    db.insert_order(ticker, exit_order["client_order_id"], exit_order, resp, "SUBMITTED")
+
+            for c in candidates:
+                if c["lock_status"] == "UNLOCKED":
+                    continue
+                if cfg.risk.strategy_mode == "MAX_CYCLES" and c["hours_to_close"] > cfg.risk.max_exit_hours_to_close:
+                    continue
+                book = normalize_orderbook(client.get_orderbook(c["market_ticker"]))
+                decision = select_order(c["lock_status"], c["p_yes"], book, cfg.risk)
+                if not decision.should_trade:
+                    continue
+
+                order_notional = decision.price_cents / 100
+                if not enforce_cap(current_exposure, order_notional, cap_dollars):
+                    continue
+
+                order = _order_payload(
+                    ticker=c["market_ticker"],
+                    decision=decision,
+                    count=1,
+                    tif=cfg.risk.maker_time_in_force,
+                    post_only=True,
+                )
+                if not enable_trading:
+                    console.print(f"[DRY-RUN] {order}")
+                    db.insert_order(c["market_ticker"], order["client_order_id"], order, {"dry_run": True}, "DRY_RUN")
+                    current_exposure += order_notional
+                    continue
+                resp = client.place_order(order)
+                console.print(resp)
+                db.insert_order(c["market_ticker"], order["client_order_id"], order, resp, "SUBMITTED")
+                current_exposure += order_notional
+        except APIError as exc:
+            console.print(f"Run loop API error: {exc}")
+        except Exception as exc:
+            console.print(f"Run loop failed gracefully: {exc}")
 
         if not RUNNING:
             break
-        time.sleep(interval_seconds)
+        time.sleep(int(interval_seconds))
 
 
 @app.command()
