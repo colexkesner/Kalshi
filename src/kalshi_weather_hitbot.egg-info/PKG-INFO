@@ -1,3 +1,21 @@
+Metadata-Version: 2.4
+Name: kalshi-weather-hitbot
+Version: 0.1.0
+Summary: Kalshi daily high-temperature trading bot
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: requests>=2.32.0
+Requires-Dist: cryptography>=42.0.0
+Requires-Dist: pydantic>=2.7.0
+Requires-Dist: python-dotenv>=1.0.1
+Requires-Dist: typer>=0.12.3
+Requires-Dist: rich>=13.7.1
+Requires-Dist: tenacity>=8.4.1
+Requires-Dist: pyyaml>=6.0.1
+Requires-Dist: pypdf>=4.0.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.2.0; extra == "dev"
+
 # kalshi-weather-hitbot
 
 A safe-by-default **Kalshi** climate/weather bot focused on high hit-rate, lock-only execution.
@@ -30,18 +48,16 @@ pip install -e .[dev]
 ## Bootstrap all climate cities
 Generate a station-accurate mapping from Kalshi Climate series and contract terms:
 ```bash
-kalshi-hitbot bootstrap-cities --overwrite --out configs/cities.yaml --category Climate --tags Weather
+kalshi-hitbot bootstrap-cities --overwrite --out configs/cities.yaml --category Climate
 ```
 
 This command:
-- pulls `/trade-api/v2/series?category=Climate&tags=Weather` by default
+- pulls `/trade-api/v2/series?category=Climate`
 - parses contract terms PDF/HTML for location + WFO hints
 - resolves ICAO/lat/lon using AviationWeather station cache (`stations.cache.json.gz`)
 - resolves timezone via NWS `points/{lat},{lon}`
 - writes `configs/cities.yaml`
 - snapshots YAML to SQLite (`city_mapping_snapshots`)
-
-Set `--tags ""` to fetch all tags.
 
 If station resolution fails, city stays in YAML and is reported in a manual-override list.
 
@@ -58,7 +74,6 @@ Safety defaults:
 ```bash
 kalshi-hitbot init
 kalshi-hitbot bootstrap-cities --overwrite
-kalshi-hitbot bootstrap-cities --overwrite --tags ""
 kalshi-hitbot scan
 kalshi-hitbot run
 kalshi-hitbot run --cap 150

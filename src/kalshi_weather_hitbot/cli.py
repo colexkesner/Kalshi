@@ -132,13 +132,17 @@ def bootstrap_cities(
     overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite output file if it exists."),
     out: str = typer.Option("configs/cities.yaml", "--out", help="Destination YAML file."),
     category: str = typer.Option("Climate", "--category", help="Kalshi series category filter."),
+    tags: str = typer.Option("Weather", "--tags", help="Kalshi series tags filter. Use empty string to fetch all tags."),
 ) -> None:
     cfg = _load_cfg()
     client = KalshiClient(cfg)
+    tags_value = tags if isinstance(tags, str) else "Weather"
+    tags_filter = tags_value.strip() or None
     try:
-        series = client.list_series(tags=None, category=category)
+        series = client.list_series(tags=tags_filter, category=category)
     except Exception as exc:
-        raise typer.Exit(f"bootstrap-cities failed: {exc}")
+        typer.secho(f"bootstrap-cities failed: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
     mapping, needs_manual_override = build_city_mapping(
         series,
         station_cache_url=cfg.data.awc_station_cache_url,

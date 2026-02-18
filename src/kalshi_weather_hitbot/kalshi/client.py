@@ -75,7 +75,20 @@ class KalshiClient:
         if category:
             params["category"] = category
         payload = self._request("GET", "/trade-api/v2/series", params=params or None)
-        return payload.get("series", [])
+        if not isinstance(payload, dict):
+            raise APIError(
+                "Malformed /trade-api/v2/series response: expected JSON object, "
+                f"got {type(payload).__name__}"
+            )
+        series = payload.get("series")
+        if series is None:
+            return []
+        if not isinstance(series, list):
+            raise APIError(
+                "Malformed /trade-api/v2/series response: expected 'series' to be a list or null, "
+                f"got {type(series).__name__}"
+            )
+        return series
 
     def list_markets(self, series_ticker: str, status: str = "open", limit: int = 100) -> list[dict[str, Any]]:
         payload = self._request("GET", "/trade-api/v2/markets", params={"series_ticker": series_ticker, "status": status, "limit": limit})

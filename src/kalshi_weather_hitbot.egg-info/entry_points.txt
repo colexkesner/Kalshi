@@ -1,0 +1,2 @@
+[console_scripts]
+kalshi-hitbot = kalshi_weather_hitbot.cli:app
