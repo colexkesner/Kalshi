@@ -1,356 +1,82 @@
-# Polymarket Trading Bot
+# kalshi-weather-hitbot
 
-English | [简体中文](README_CN.md)
+A **safe-by-default** Python trading bot for Kalshi weather markets. It targets high hit-rate trades by acting only when outcomes appear nearly locked by objective data (METAR observations + NWS hourly forecasts).
 
-A beginner-friendly Python trading bot for Polymarket with gasless transactions and real-time WebSocket data.
+## What this bot does
+- Screens Kalshi weather series/markets.
+- Pulls objective weather data:
+  - METAR: `https://aviationweather.gov/api/data/metar`
+  - NWS: `https://api.weather.gov`
+- Evaluates conservative lock logic:
+  - Locked YES if `min_possible >= L` and `max_possible <= U`
+  - Locked NO if `min_possible > U` or `max_possible < L`
+- Defaults to **DRY-RUN**.
+- Uses **post-only maker limit** orders when trading is enabled.
+- Persists market snapshots, evaluations, and order attempts to SQLite for auditability.
 
-## Features
+## Kalshi environments
+- Demo: `https://demo-api.kalshi.co`
+- Production: `https://api.elections.kalshi.com`
 
-- **Simple API**: Just a few lines of code to start trading
-- **Gasless Transactions**: No gas fees with Builder Program credentials
-- **Real-time WebSocket**: Live orderbook updates via WebSocket
-- **15-Minute Markets**: Built-in support for BTC/ETH/SOL/XRP 15-minute Up/Down markets
-- **Flash Crash Strategy**: Pre-built strategy for volatility trading
-- **Terminal UI**: Real-time orderbook display with in-place updates
-- **Secure Key Storage**: Private keys encrypted with PBKDF2 + Fernet
-- **Fully Tested**: 89 unit tests covering all functionality
+## Authentication signing (critical)
+Authenticated headers:
+- `KALSHI-ACCESS-KEY`
+- `KALSHI-ACCESS-TIMESTAMP`
+- `KALSHI-ACCESS-SIGNATURE`
 
-## Quick Start (5 Minutes)
+Signature message format:
+```text
+timestamp_ms + HTTP_METHOD + PATH_WITHOUT_QUERY
+```
+Example:
+```text
+1703123456789GET/trade-api/v2/portfolio/balance
+```
+Important rules:
+- Do not include hostname.
+- Do not include query params in signed path.
+- Use RSA-PSS + SHA256, salt length `PSS.DIGEST_LENGTH`.
 
-### Step 1: Install
-
-```bash
-git clone https://github.com/your-username/polymarket-trading-bot.git
-cd polymarket-trading-bot
+## Windows + VS Code setup
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+copy .env.example .env
+copy configs\config.example.yaml configs\config.yaml
+copy configs\cities.example.yaml configs\cities.yaml
 ```
 
-### Step 2: Configure
+Recommended private key location: `./secrets/kalshi.key` (gitignored).  
+Create API key in Kalshi account settings → API Keys, download the private key, and store securely (it cannot be retrieved later).
+
+## Run commands
+Because code lives under `src/`, use `PYTHONPATH=src`:
 
 ```bash
-# Set your credentials
-export POLY_PRIVATE_KEY=your_metamask_private_key
-export POLY_SAFE_ADDRESS=0xYourPolymarketSafeAddress
+PYTHONPATH=src python -m kalshi_weather_hitbot init
+PYTHONPATH=src python -m kalshi_weather_hitbot scan
+PYTHONPATH=src python -m kalshi_weather_hitbot run
+PYTHONPATH=src python -m kalshi_weather_hitbot run --enable-trading
 ```
 
-> **Where to find your Safe address?** Go to [polymarket.com/settings](https://polymarket.com/settings) and copy your wallet address.
+Production trading requires `--enable-trading` **and** typed confirmation:
+`I_UNDERSTAND_THIS_WILL_TRADE_REAL_MONEY`.
+
+## CLI overview
+- `init`: interactive setup, API info, and capital cap (`$` or `%` of available balance).
+- `scan`: scan candidates and print locked states (no orders).
+- `run`: loop mode, default dry-run.
+- `positions`: portfolio balance/info.
+- `orders`: show open orders.
+- `cancel-all --confirm`: cancel open orders.
+
+## Rate limits and cache
+- AviationWeather: keep under 100 req/min. Bot includes TTL caching (default 60s).
+- NWS requests also cached with TTL.
+
+## Disclaimers
+- No profit guarantees.
+- Spreads, liquidity, and fees materially affect outcomes.
+- Market settlement uses market rules; station differences can still matter. This bot stores rules metadata for traceability.
 
-### Step 3: Run
-
-```bash
-# Run the quickstart example
-python examples/quickstart.py
-
-# Or run the Flash Crash Strategy
-python strategies/flash_crash_strategy.py --coin BTC
-```
-
-That's it! You're ready to trade.
-
-## Trading Strategies
-
-### Flash Crash Strategy
-
-Monitors 15-minute Up/Down markets for sudden probability drops and executes trades automatically.
-
-```bash
-# Run with default settings (0.30 drop threshold)
-python strategies/flash_crash_strategy.py --coin BTC
-
-# Custom settings
-python strategies/flash_crash_strategy.py --coin ETH --drop 0.25 --size 10
-
-# Available options
---coin      BTC, ETH, SOL, XRP (default: ETH)
---drop      Drop threshold as absolute change (default: 0.30)
---size      Trade size in USDC (default: 5.0)
---lookback  Detection window in seconds (default: 10)
---take-profit  TP in dollars (default: 0.10)
---stop-loss    SL in dollars (default: 0.05)
-```
-
-**Strategy Logic:**
-1. Auto-discover current 15-minute market
-2. Monitor orderbook prices via WebSocket in real-time
-3. When probability drops by 0.30+ in 10 seconds, buy the crashed side
-4. Exit at +$0.10 (take profit) or -$0.05 (stop loss)
-
-## Strategy Development Guide
-
-- See `docs/strategy_guide.md` for a step-by-step tutorial and templates.
-
-### Real-time Orderbook TUI
-
-View live orderbook data in a beautiful terminal interface:
-
-```bash
-python strategies/orderbook_tui.py --coin BTC --levels 5
-```
-
-## Code Examples
-
-### Simplest Example
-
-```python
-from src import create_bot_from_env
-import asyncio
-
-async def main():
-    # Create bot from environment variables
-    bot = create_bot_from_env()
-
-    # Get your open orders
-    orders = await bot.get_open_orders()
-    print(f"You have {len(orders)} open orders")
-
-asyncio.run(main())
-```
-
-### Place an Order
-
-```python
-from src import TradingBot, Config
-import asyncio
-
-async def trade():
-    # Create configuration
-    config = Config(safe_address="0xYourSafeAddress")
-
-    # Initialize bot with your private key
-    bot = TradingBot(config=config, private_key="0xYourPrivateKey")
-
-    # Place a buy order
-    result = await bot.place_order(
-        token_id="12345...",   # Market token ID
-        price=0.65,            # Price (0.65 = 65% probability)
-        size=10.0,             # Number of shares
-        side="BUY"             # or "SELL"
-    )
-
-    if result.success:
-        print(f"Order placed! ID: {result.order_id}")
-    else:
-        print(f"Order failed: {result.message}")
-
-asyncio.run(trade())
-```
-
-### Real-time WebSocket Data
-
-```python
-from src.websocket_client import MarketWebSocket, OrderbookSnapshot
-import asyncio
-
-async def main():
-    ws = MarketWebSocket()
-
-    @ws.on_book
-    async def on_book_update(snapshot: OrderbookSnapshot):
-        print(f"Mid price: {snapshot.mid_price:.4f}")
-        print(f"Best bid: {snapshot.best_bid:.4f}")
-        print(f"Best ask: {snapshot.best_ask:.4f}")
-
-    await ws.subscribe(["token_id_1", "token_id_2"])
-    await ws.run()
-
-asyncio.run(main())
-```
-
-### Get 15-Minute Market Info
-
-```python
-from src.gamma_client import GammaClient
-
-gamma = GammaClient()
-
-# Get current BTC 15-minute market
-market = gamma.get_market_info("BTC")
-print(f"Market: {market['question']}")
-print(f"Up token: {market['token_ids']['up']}")
-print(f"Down token: {market['token_ids']['down']}")
-print(f"Ends: {market['end_date']}")
-```
-
-### Cancel Orders
-
-```python
-# Cancel a specific order
-await bot.cancel_order("order_id_here")
-
-# Cancel all orders
-await bot.cancel_all_orders()
-
-# Cancel orders for a specific market
-await bot.cancel_market_orders(market="condition_id", asset_id="token_id")
-```
-
-## Project Structure
-
-```
-polymarket-trading-bot/
-├── src/                      # Core library
-│   ├── bot.py               # TradingBot - main interface
-│   ├── config.py            # Configuration handling
-│   ├── client.py            # API clients (CLOB, Relayer)
-│   ├── signer.py            # Order signing (EIP-712)
-│   ├── crypto.py            # Key encryption
-│   ├── utils.py             # Helper functions
-│   ├── gamma_client.py      # 15-minute market discovery
-│   └── websocket_client.py  # Real-time WebSocket client
-│
-├── strategies/               # Trading strategies
-│   ├── flash_crash_strategy.py  # Volatility trading strategy
-│   └── orderbook_tui.py     # Real-time orderbook display
-│
-├── examples/                 # Example code
-│   ├── quickstart.py        # Start here!
-│   ├── basic_trading.py     # Common operations
-│   └── strategy_example.py  # Custom strategies
-│
-├── scripts/                  # Utility scripts
-│   ├── setup.py             # Interactive setup
-│   ├── run_bot.py           # Run the bot
-│   └── full_test.py         # Integration tests
-│
-└── tests/                    # Unit tests
-```
-
-## Configuration Options
-
-### Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `POLY_PRIVATE_KEY` | Only when `POLY_DRY_RUN=false` | Your wallet private key |
-| `POLY_SAFE_ADDRESS` | Yes | Your Polymarket Safe address |
-| `POLY_BUILDER_API_KEY` | For gasless | Builder Program API key |
-| `POLY_BUILDER_API_SECRET` | For gasless | Builder Program secret |
-| `POLY_BUILDER_API_PASSPHRASE` | For gasless | Builder Program passphrase |
-| `POLY_DRY_RUN` | No (default `true`) | Simulate orders and never place live trades |
-| `POLY_MAX_DAILY_NOTIONAL` | No | Daily notional cap in USDC |
-| `POLY_MAX_POSITION_PER_MARKET` | No | Max exposure per market |
-| `POLY_MAX_OPEN_ORDERS` | No | Max live open orders |
-| `POLY_MAX_LOSS_DAILY` | No | Daily stop-loss (USDC) |
-| `POLY_HALT_ON_ERROR_COUNT` | No | Halt trading after repeated errors |
-
-### Config File (Alternative)
-
-Create `config.yaml`:
-
-```yaml
-safe_address: "0xYourSafeAddress"
-
-# For gasless trading (optional)
-builder:
-  api_key: "your_api_key"
-  api_secret: "your_api_secret"
-  api_passphrase: "your_passphrase"
-```
-
-Then load it:
-
-```python
-bot = TradingBot(config_path="config.yaml", private_key="0x...")
-```
-
-## Gasless Trading
-
-To eliminate gas fees:
-
-1. Apply for [Builder Program](https://polymarket.com/settings?tab=builder)
-2. Set the environment variables:
-
-```bash
-export POLY_BUILDER_API_KEY=your_key
-export POLY_BUILDER_API_SECRET=your_secret
-export POLY_BUILDER_API_PASSPHRASE=your_passphrase
-```
-
-The bot will automatically use gasless mode when credentials are present.
-
-## API Reference
-
-### TradingBot Methods
-
-| Method | Description |
-|--------|-------------|
-| `place_order(token_id, price, size, side)` | Place a limit order |
-| `cancel_order(order_id)` | Cancel a specific order |
-| `cancel_all_orders()` | Cancel all open orders |
-| `cancel_market_orders(market, asset_id)` | Cancel orders for a specific market |
-| `get_open_orders()` | List your open orders |
-| `get_trades(limit=100)` | Get your trade history |
-| `get_order_book(token_id)` | Get market order book |
-| `get_market_price(token_id)` | Get current market price |
-| `is_initialized()` | Check if bot is ready |
-
-### MarketWebSocket Methods
-
-| Method | Description |
-|--------|-------------|
-| `subscribe(asset_ids, replace=False)` | Subscribe to market data |
-| `run(auto_reconnect=True)` | Start WebSocket connection |
-| `disconnect()` | Close connection |
-| `get_orderbook(asset_id)` | Get cached orderbook |
-| `get_mid_price(asset_id)` | Get mid price |
-
-### GammaClient Methods
-
-| Method | Description |
-|--------|-------------|
-| `get_current_15m_market(coin)` | Get current 15-min market |
-| `get_market_info(coin)` | Get market with token IDs |
-| `get_all_15m_markets()` | List all 15-min markets |
-
-
-### Safe Key Usage
-
-- Use a **dedicated hot wallet** with minimal funds for automation.
-- Keep long-term funds in cold storage or separate wallets.
-- In `DRY_RUN` mode, the bot can run end-to-end **without a private key**.
-- Never share `.env`, encrypted key files, or API credentials.
-
-## Security
-
-Your private key is protected by:
-
-1. **PBKDF2** key derivation (480,000 iterations)
-2. **Fernet** symmetric encryption
-3. File permissions set to `0600` (owner-only)
-
-Best practices:
-- Never commit `.env` files to git
-- Use a dedicated wallet for trading
-- Keep your encrypted key file private
-
-## Testing
-
-```bash
-# Run all tests
-pytest tests/ -v
-
-# Run with coverage
-pytest tests/ -v --cov=src
-```
-
-## Troubleshooting
-
-| Problem | Solution |
-|---------|----------|
-| `POLY_PRIVATE_KEY not set` | Run `export POLY_PRIVATE_KEY=your_key` |
-| `POLY_SAFE_ADDRESS not set` | Get it from polymarket.com/settings |
-| `Invalid private key` | Check key is 64 hex characters |
-| `Order failed` | Check you have sufficient balance |
-| `WebSocket not connecting` | Check network/firewall settings |
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Write tests for new code
-4. Run `pytest tests/ -v`
-5. Submit a pull request
-
-## License
-
-MIT License - see LICENSE file for details.
