@@ -68,8 +68,13 @@ class KalshiClient:
             raise APIError(f"API error {response.status_code}: {response.text}")
         return response.json() if response.text else {}
 
-    def list_series(self, tags: str = "Weather") -> list[dict[str, Any]]:
-        payload = self._request("GET", "/trade-api/v2/series", params={"tags": tags})
+    def list_series(self, tags: str | None = "Weather", category: str | None = None) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {}
+        if tags:
+            params["tags"] = tags
+        if category:
+            params["category"] = category
+        payload = self._request("GET", "/trade-api/v2/series", params=params or None)
         return payload.get("series", [])
 
     def list_markets(self, series_ticker: str, status: str = "open", limit: int = 100) -> list[dict[str, Any]]:
@@ -88,9 +93,16 @@ class KalshiClient:
     def place_order(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/trade-api/v2/portfolio/orders", json_body=payload, authenticated=True)
 
+    def get_positions(self) -> list[dict[str, Any]]:
+        payload = self._request("GET", "/trade-api/v2/portfolio/positions", authenticated=True)
+        return payload.get("positions", [])
+
     def list_orders(self, status: str = "open") -> list[dict[str, Any]]:
         payload = self._request("GET", "/trade-api/v2/portfolio/orders", params={"status": status}, authenticated=True)
         return payload.get("orders", [])
+
+    def amend_order(self, order_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", f"/trade-api/v2/portfolio/orders/{order_id}/amend", json_body=payload, authenticated=True)
 
     def cancel_order(self, order_id: str) -> dict[str, Any]:
         return self._request("DELETE", f"/trade-api/v2/portfolio/orders/{order_id}", authenticated=True)

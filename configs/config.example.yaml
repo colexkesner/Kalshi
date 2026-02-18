@@ -20,6 +20,14 @@ risk:
   max_orders_per_market: 2
   min_liquidity_contracts: 5
   max_spread_cents: 15
+  strategy_mode: HOLD_TO_SETTLEMENT # HOLD_TO_SETTLEMENT|MAX_CYCLES
+  take_profit_cents: 98
+  min_profit_cents: 1
+  max_exit_hours_to_close: 6
+  enable_exit_sells: true
+  maker_time_in_force: good_till_canceled
+  taker_time_in_force: immediate_or_cancel
+  send_price_in_dollars: true
 data:
   cache_ttl_seconds: 60
   aviationweather_base_url: https://aviationweather.gov

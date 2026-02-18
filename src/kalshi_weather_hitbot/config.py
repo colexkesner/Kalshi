@@ -27,6 +27,14 @@ class RiskConfig(BaseModel):
     max_orders_per_market: int = 2
     min_liquidity_contracts: int = 5
     max_spread_cents: int = 15
+    strategy_mode: Literal["HOLD_TO_SETTLEMENT", "MAX_CYCLES"] = "HOLD_TO_SETTLEMENT"
+    take_profit_cents: int = 98
+    min_profit_cents: int = 1
+    max_exit_hours_to_close: float = 6.0
+    enable_exit_sells: bool = True
+    maker_time_in_force: str = "good_till_canceled"
+    taker_time_in_force: str = "immediate_or_cancel"
+    send_price_in_dollars: bool = True
 
 
 class DataConfig(BaseModel):
