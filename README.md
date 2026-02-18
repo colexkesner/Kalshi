@@ -1,82 +1,69 @@
 # kalshi-weather-hitbot
 
-A **safe-by-default** Python trading bot for Kalshi weather markets. It targets high hit-rate trades by acting only when outcomes appear nearly locked by objective data (METAR observations + NWS hourly forecasts).
+A safe-by-default **Kalshi** climate/weather bot focused on high hit-rate, lock-only execution.
 
-## What this bot does
-- Screens Kalshi weather series/markets.
-- Pulls objective weather data:
-  - METAR: `https://aviationweather.gov/api/data/metar`
-  - NWS: `https://api.weather.gov`
-- Evaluates conservative lock logic:
-  - Locked YES if `min_possible >= L` and `max_possible <= U`
-  - Locked NO if `min_possible > U` or `max_possible < L`
-- Defaults to **DRY-RUN**.
-- Uses **post-only maker limit** orders when trading is enabled.
-- Persists market snapshots, evaluations, and order attempts to SQLite for auditability.
+## Environment + credentials
+Set:
+- `KALSHI_ENV=demo|production` (default demo)
+- `KALSHI_API_KEY_ID`
+- `KALSHI_PRIVATE_KEY_PATH`
 
-## Kalshi environments
-- Demo: `https://demo-api.kalshi.co`
-- Production: `https://api.elections.kalshi.com`
+Base URLs are selected automatically from `KALSHI_ENV`:
+- demo: `https://demo-api.kalshi.co`
+- production: `https://api.elections.kalshi.com`
 
-## Authentication signing (critical)
-Authenticated headers:
-- `KALSHI-ACCESS-KEY`
-- `KALSHI-ACCESS-TIMESTAMP`
-- `KALSHI-ACCESS-SIGNATURE`
-
-Signature message format:
-```text
-timestamp_ms + HTTP_METHOD + PATH_WITHOUT_QUERY
+## Install
+### macOS / Linux
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .[dev]
 ```
-Example:
-```text
-1703123456789GET/trade-api/v2/portfolio/balance
-```
-Important rules:
-- Do not include hostname.
-- Do not include query params in signed path.
-- Use RSA-PSS + SHA256, salt length `PSS.DIGEST_LENGTH`.
 
-## Windows + VS Code setup
+### Windows (PowerShell)
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-copy .env.example .env
-copy configs\config.example.yaml configs\config.yaml
-copy configs\cities.example.yaml configs\cities.yaml
+pip install -e .[dev]
 ```
 
-Recommended private key location: `./secrets/kalshi.key` (gitignored).  
-Create API key in Kalshi account settings → API Keys, download the private key, and store securely (it cannot be retrieved later).
-
-## Run commands
-Because code lives under `src/`, use `PYTHONPATH=src`:
-
+## Bootstrap all climate cities
+Generate a station-accurate mapping from Kalshi Climate series and contract terms:
 ```bash
-PYTHONPATH=src python -m kalshi_weather_hitbot init
-PYTHONPATH=src python -m kalshi_weather_hitbot scan
-PYTHONPATH=src python -m kalshi_weather_hitbot run
-PYTHONPATH=src python -m kalshi_weather_hitbot run --enable-trading
+kalshi-hitbot bootstrap-cities --overwrite --out configs/cities.yaml --category Climate
 ```
 
-Production trading requires `--enable-trading` **and** typed confirmation:
-`I_UNDERSTAND_THIS_WILL_TRADE_REAL_MONEY`.
+This command:
+- pulls `/trade-api/v2/series?category=Climate`
+- parses contract terms PDF/HTML for location + WFO hints
+- resolves ICAO/lat/lon using AviationWeather station cache (`stations.cache.json.gz`)
+- resolves timezone via NWS `points/{lat},{lon}`
+- writes `configs/cities.yaml`
+- snapshots YAML to SQLite (`city_mapping_snapshots`)
 
-## CLI overview
-- `init`: interactive setup, API info, and capital cap (`$` or `%` of available balance).
-- `scan`: scan candidates and print locked states (no orders).
-- `run`: loop mode, default dry-run.
-- `positions`: portfolio balance/info.
-- `orders`: show open orders.
-- `cancel-all --confirm`: cancel open orders.
+If station resolution fails, city stays in YAML and is reported in a manual-override list.
 
-## Rate limits and cache
-- AviationWeather: keep under 100 req/min. Bot includes TTL caching (default 60s).
-- NWS requests also cached with TTL.
+## Strategy modes
+- `HOLD_TO_SETTLEMENT` (default)
+- `MAX_CYCLES` (exits first, reduce-only, then entries)
 
-## Disclaimers
-- No profit guarantees.
-- Spreads, liquidity, and fees materially affect outcomes.
-- Market settlement uses market rules; station differences can still matter. This bot stores rules metadata for traceability.
+Safety defaults:
+- DRY-RUN by default
+- `--enable-trading` required for live submission
+- production additionally requires typing confirmation string
 
+## CLI
+```bash
+kalshi-hitbot init
+kalshi-hitbot bootstrap-cities --overwrite
+kalshi-hitbot scan
+kalshi-hitbot run
+kalshi-hitbot run --cap 150
+kalshi-hitbot run --cap 20%
+kalshi-hitbot run --enable-trading
+```
+
+## Tests
+```bash
+pytest
+```

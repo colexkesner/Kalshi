@@ -1,24 +1,20 @@
+chicago:
+  kalshi_series_tickers: ["KXHIGHTEMP-CHI", "KXLOWTEMP-CHI", "KXSNOW-CHI", "KXRAIN-CHI"]
+  resolution_location_name: "Chicago Midway, IL"
+  resolution_source_type: nws_climate_daily
+  nws_wfo: LOT
+  nws_location_label: "CHICAGO MIDWAY AP"
+  icao_station: KMDW
+  lat: 41.7868
+  lon: -87.7522
+  tz: America/Chicago
 nyc:
   kalshi_series_tickers: ["KXHIGHTEMP-NYC"]
-  icao_station: "KNYC"
-  lat: 40.7128
-  lon: -74.0060
-  tz: "America/New_York"
-chicago:
-  kalshi_series_tickers: ["KXHIGHTEMP-CHI"]
-  icao_station: "KMDW"
-  lat: 41.8781
-  lon: -87.6298
-  tz: "America/Chicago"
-miami:
-  kalshi_series_tickers: ["KXHIGHTEMP-MIA"]
-  icao_station: "KMIA"
-  lat: 25.7617
-  lon: -80.1918
-  tz: "America/New_York"
-austin:
-  kalshi_series_tickers: ["KXHIGHTEMP-AUS"]
-  icao_station: "KAUS"
-  lat: 30.2672
-  lon: -97.7431
-  tz: "America/Chicago"
+  resolution_location_name: "Central Park, New York"
+  resolution_source_type: nws_climate_daily
+  nws_wfo: OKX
+  nws_location_label: "NEW YORK CENTRAL PARK"
+  icao_station: null
+  lat: null
+  lon: null
+  tz: America/New_York

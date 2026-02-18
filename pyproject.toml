@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kalshi-weather-hitbot"
+version = "0.1.0"
+description = "Kalshi daily high-temperature trading bot"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "requests>=2.32.0",
+  "cryptography>=42.0.0",
+  "pydantic>=2.7.0",
+  "python-dotenv>=1.0.1",
+  "typer>=0.12.3",
+  "rich>=13.7.1",
+  "tenacity>=8.4.1",
+  "pyyaml>=6.0.1",
+  "pypdf>=4.0.0",
+]
+
+[project.scripts]
+kalshi-hitbot = "kalshi_weather_hitbot.cli:app"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.2.0"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

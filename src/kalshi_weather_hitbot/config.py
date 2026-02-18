@@ -20,6 +20,7 @@ class RiskConfig(BaseModel):
     lock_no_probability: float = 0.01
     edge_buffer: float = 0.02
     safety_bias_f: float = 3.0
+    station_uncertainty_f: float = 0.5
     min_hours_to_close: float = 0.25
     max_hours_to_close: float = 6.0
     max_per_market_notional: float = 50.0
@@ -27,12 +28,22 @@ class RiskConfig(BaseModel):
     max_orders_per_market: int = 2
     min_liquidity_contracts: int = 5
     max_spread_cents: int = 15
+    strategy_mode: Literal["HOLD_TO_SETTLEMENT", "MAX_CYCLES"] = "HOLD_TO_SETTLEMENT"
+    take_profit_cents: int = 98
+    min_profit_cents: int = 1
+    max_exit_hours_to_close: float = 6.0
+    enable_exit_sells: bool = True
+    maker_time_in_force: str = "good_till_canceled"
+    taker_time_in_force: str = "immediate_or_cancel"
+    send_price_in_dollars: bool = True
 
 
 class DataConfig(BaseModel):
     cache_ttl_seconds: int = 60
     aviationweather_base_url: str = "https://aviationweather.gov"
     nws_base_url: str = "https://api.weather.gov"
+    awc_station_cache_url: str = "https://aviationweather.gov/data/cache/stations.cache.json.gz"
+    awc_station_cache_path: str = ".cache/awc/stations.cache.json.gz"
 
 
 class ScanConfig(BaseModel):

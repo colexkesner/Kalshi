@@ -50,6 +50,12 @@ CREATE TABLE IF NOT EXISTS capital_config (
   cap_value REAL,
   derived_cap_dollars REAL
 );
+CREATE TABLE IF NOT EXISTS city_mapping_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  yaml_text TEXT NOT NULL,
+  source TEXT NOT NULL
+);
 """
 
 
@@ -123,4 +129,12 @@ class DB:
             con.execute(
                 "INSERT INTO capital_config(ts, cap_mode, cap_value, derived_cap_dollars) VALUES (?, ?, ?, ?)",
                 (self._ts(), cap_mode, cap_value, derived_cap_dollars),
+            )
+
+
+    def save_city_mapping_snapshot(self, yaml_text: str, source: str = "bootstrap-cities") -> None:
+        with self.connect() as con:
+            con.execute(
+                "INSERT INTO city_mapping_snapshots(ts, yaml_text, source) VALUES (?, ?, ?)",
+                (self._ts(), yaml_text, source),
             )
