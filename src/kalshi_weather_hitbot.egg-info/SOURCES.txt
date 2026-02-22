@@ -38,6 +38,7 @@ tests/test_bootstrap_cities_cli.py
 tests/test_contract_terms_parsing.py
 tests/test_dst_window.py
 tests/test_idempotency.py
+tests/test_kalshi_client_list_series.py
 tests/test_kalshi_integration.py
 tests/test_lock_logic.py
 tests/test_maker_entry.py

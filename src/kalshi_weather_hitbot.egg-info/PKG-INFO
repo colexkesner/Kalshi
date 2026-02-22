@@ -48,16 +48,18 @@ pip install -e .[dev]
 ## Bootstrap all climate cities
 Generate a station-accurate mapping from Kalshi Climate series and contract terms:
 ```bash
-kalshi-hitbot bootstrap-cities --overwrite --out configs/cities.yaml --category Climate
+kalshi-hitbot bootstrap-cities --overwrite --out configs/cities.yaml --category Climate --tags Weather
 ```
 
 This command:
-- pulls `/trade-api/v2/series?category=Climate`
+- pulls `/trade-api/v2/series?category=Climate&tags=Weather` by default
 - parses contract terms PDF/HTML for location + WFO hints
 - resolves ICAO/lat/lon using AviationWeather station cache (`stations.cache.json.gz`)
 - resolves timezone via NWS `points/{lat},{lon}`
 - writes `configs/cities.yaml`
 - snapshots YAML to SQLite (`city_mapping_snapshots`)
+
+Set `--tags ""` to fetch all tags.
 
 If station resolution fails, city stays in YAML and is reported in a manual-override list.
 
@@ -74,6 +76,7 @@ Safety defaults:
 ```bash
 kalshi-hitbot init
 kalshi-hitbot bootstrap-cities --overwrite
+kalshi-hitbot bootstrap-cities --overwrite --tags ""
 kalshi-hitbot scan
 kalshi-hitbot run
 kalshi-hitbot run --cap 150
