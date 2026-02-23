@@ -37,6 +37,13 @@ def is_city_climate_series(series: dict[str, Any]) -> bool:
     return any(p in text for p in INCLUDE_PATTERNS)
 
 
+def is_daily_high_temp_series(series: dict[str, Any]) -> bool:
+    ticker = str(series.get("ticker") or "").upper()
+    if "HIGHTEMP" not in ticker and "HIGH-TEMP" not in ticker:
+        return False
+    return is_city_climate_series(series)
+
+
 def derive_city_key(series_ticker: str, location_name: str | None) -> str:
     suffix = (series_ticker.split("-")[-1] if "-" in series_ticker else series_ticker).lower()
     ticker_map = {
@@ -91,7 +98,10 @@ def parse_contract_terms_text(text: str) -> ContractTermsInfo:
     wfo = wfo_match.group(1).upper() if wfo_match else None
 
     patterns = [
+        r"highest\s+temperature\s+recorded\s+at\s+(.+?)\s+for\b",
+        r"Climatological\s+Report\s*\(Daily\).*?Location\s*:\s*([^.;\n]+)",
         r"(?:Location|Station|Observed at|Observation site)\s*[:\-]\s*([^.;\n]+)",
+        r"recorded\s+at\s+(.+?),",
         r"recorded\s+at\s+([^.;\n]+)",
     ]
     location = None
@@ -203,7 +213,7 @@ def build_city_mapping(
     station_index = _load_station_cache(session, station_cache_url, station_cache_path, cache_ttl_seconds)
 
     for series in series_list:
-        if not is_city_climate_series(series):
+        if not is_daily_high_temp_series(series):
             continue
         ticker = str(series.get("ticker") or "")
         if not ticker:
@@ -224,10 +234,12 @@ def build_city_mapping(
             city_key,
             {
                 "kalshi_series_tickers": [],
+                "contract_terms_url": terms_url,
                 "resolution_location_name": terms_info.resolution_location_name,
                 "resolution_source_type": terms_info.resolution_source_type,
                 "nws_wfo": terms_info.nws_wfo,
                 "nws_location_label": terms_info.nws_location_label,
+                "needs_manual_override": False,
                 "icao_station": None,
                 "lat": None,
                 "lon": None,
@@ -237,6 +249,8 @@ def build_city_mapping(
 
         if ticker not in current["kalshi_series_tickers"]:
             current["kalshi_series_tickers"].append(ticker)
+        if not current.get("contract_terms_url") and terms_url:
+            current["contract_terms_url"] = terms_url
 
         if not current.get("resolution_location_name") and terms_info.resolution_location_name:
             current["resolution_location_name"] = terms_info.resolution_location_name
@@ -254,7 +268,14 @@ def build_city_mapping(
             current["lat"] = resolved.get("lat")
             current["lon"] = resolved.get("lon")
             current["tz"] = _resolve_timezone(session, nws_base_url, float(current["lat"]), float(current["lon"]))
+            current["needs_manual_override"] = not bool(current.get("tz"))
+            if current["needs_manual_override"]:
+                if city_key not in needs_manual_override:
+                    needs_manual_override.append(city_key)
+            elif city_key in needs_manual_override:
+                needs_manual_override.remove(city_key)
         else:
+            current["needs_manual_override"] = True
             if city_key not in needs_manual_override:
                 needs_manual_override.append(city_key)
 

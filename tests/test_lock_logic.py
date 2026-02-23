@@ -16,3 +16,13 @@ def test_locked_no_too_hot():
 def test_unlocked():
     out = evaluate_lock(70, 75, observed_max=72, forecast_max_remaining=74, safety_bias_f=3)
     assert out.lock_status == "UNLOCKED"
+
+
+def test_locked_yes_or_below_threshold():
+    out = evaluate_lock(None, 61, observed_max=58, forecast_max_remaining=58, safety_bias_f=0, station_uncertainty_f=0)
+    assert out.lock_status == "LOCKED_YES"
+
+
+def test_locked_yes_or_above_threshold():
+    out = evaluate_lock(70, None, observed_max=72, forecast_max_remaining=72, safety_bias_f=0, station_uncertainty_f=0)
+    assert out.lock_status == "LOCKED_YES"

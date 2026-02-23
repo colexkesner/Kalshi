@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from kalshi_weather_hitbot.config import AppConfig, EnvSettings, load_yaml_config, save_yaml_config
-from kalshi_weather_hitbot.data.city_bootstrap import build_city_mapping, dump_city_mapping_yaml
+from kalshi_weather_hitbot.data.city_bootstrap import build_city_mapping, dump_city_mapping_yaml, is_daily_high_temp_series
 from kalshi_weather_hitbot.data.city_mapping import load_city_mapping
 from kalshi_weather_hitbot.data.metar import MetarClient, max_observed_temp_f
 from kalshi_weather_hitbot.data.nws import NWSClient, max_forecast_temp_f
@@ -127,6 +127,16 @@ def _is_high_temp_series(series_ticker: str) -> bool:
     return "HIGHTEMP" in series_ticker.upper() or "HIGH-TEMP" in series_ticker.upper()
 
 
+def _city_mapping_counts(cities: dict) -> tuple[int, int, int]:
+    total = len(cities)
+    usable = sum(
+        1
+        for city in cities.values()
+        if city.get("icao_station") and city.get("lat") is not None and city.get("lon") is not None and city.get("tz")
+    )
+    return total, usable, total - usable
+
+
 @app.command("bootstrap-cities")
 def bootstrap_cities(
     overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite output file if it exists."),
@@ -138,13 +148,38 @@ def bootstrap_cities(
     client = KalshiClient(cfg)
     tags_value = tags if isinstance(tags, str) else "Weather"
     tags_filter = tags_value.strip() or None
+    query_attempts: list[tuple[str | None, str | None]] = []
+    used_query: tuple[str | None, str | None] | None = None
     try:
-        series = client.list_series(tags=tags_filter, category=category)
+        def _fetch_series(fetch_tags: str | None, fetch_category: str | None):
+            query_attempts.append((fetch_tags, fetch_category))
+            return client.list_series(tags=fetch_tags, category=fetch_category)
+
+        series = _fetch_series(tags_filter, category)
+        if series:
+            used_query = (tags_filter, category)
+        if not series and tags_filter is not None:
+            series = _fetch_series(None, category)
+            if series:
+                used_query = (None, category)
+        if not series and category:
+            series = _fetch_series(tags_filter, None)
+            if series:
+                used_query = (tags_filter, None)
+        if not series and category and tags_filter is not None:
+            series = _fetch_series(None, None)
+            if series:
+                used_query = (None, None)
+    except APIError as exc:
+        typer.secho(f"bootstrap-cities failed: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
     except Exception as exc:
         typer.secho(f"bootstrap-cities failed: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
+    total_series_seen = len(series)
+    high_temp_series = [s for s in series if is_daily_high_temp_series(s)]
     mapping, needs_manual_override = build_city_mapping(
-        series,
+        high_temp_series,
         station_cache_url=cfg.data.awc_station_cache_url,
         station_cache_path=cfg.data.awc_station_cache_path,
         cache_ttl_seconds=cfg.data.cache_ttl_seconds,
@@ -160,10 +195,30 @@ def bootstrap_cities(
 
     DB(cfg.db_path).save_city_mapping_snapshot(yaml_text=yaml_text, source="bootstrap-cities")
     resolved_count = sum(1 for c in mapping.values() if c.get("icao_station") and c.get("lat") is not None and c.get("lon") is not None and c.get("tz"))
+    unresolved_station_names = sorted(
+        {
+            str(c.get("resolution_location_name") or city_key)
+            for city_key, c in mapping.items()
+            if c.get("needs_manual_override")
+        }
+    )
+    if used_query is None and query_attempts:
+        used_query = query_attempts[-1]
+    console.print(
+        "Series query used: "
+        f"category={repr(used_query[1]) if used_query else 'None'} "
+        f"tags={repr(used_query[0]) if used_query else 'None'} "
+        f"(attempts={len(query_attempts)})"
+    )
+    console.print(f"Series seen: {total_series_seen}")
+    console.print(f"High-temp series used: {len(high_temp_series)}")
     console.print(f"Wrote {len(mapping)} city mappings to {out_path}")
-    console.print(f"Resolved ICAO/lat/lon/tz for {resolved_count} cities")
+    console.print(f"Resolved stations: {resolved_count}")
+    console.print(f"Unresolved stations: {len(mapping) - resolved_count}")
     if needs_manual_override:
         console.print("Needs manual override: " + ", ".join(sorted(needs_manual_override)))
+    if unresolved_station_names:
+        console.print("Unresolved station names: " + ", ".join(unresolved_station_names))
 
 
 @app.command()
@@ -271,6 +326,11 @@ def _scan_once(cfg: AppConfig) -> list[dict]:
 def scan() -> None:
     """Scan weather markets and report locked candidates."""
     cfg = _load_cfg()
+    cities = load_city_mapping(Path("./configs/cities.yaml"))
+    if not cities:
+        cities = load_city_mapping(Path("./configs/cities.example.yaml"))
+    total_cities, usable_cities, skipped_cities = _city_mapping_counts(cities)
+    console.print(f"Cities loaded: total={total_cities} usable={usable_cities} skipped={skipped_cities}")
     try:
         candidates = _scan_once(cfg)
     except Exception as exc:
@@ -310,6 +370,11 @@ def run(
     if cap:
         console.print(f"Using run-time capital cap override: {cap} (config file unchanged).")
 
+    cities = load_city_mapping(Path("./configs/cities.yaml"))
+    if not cities:
+        cities = load_city_mapping(Path("./configs/cities.example.yaml"))
+    total_cities, usable_cities, skipped_cities = _city_mapping_counts(cities)
+    console.print(f"Cities loaded: total={total_cities} usable={usable_cities} skipped={skipped_cities}")
     console.print("DRY-RUN mode" if not enable_trading else "TRADING ENABLED")
     while RUNNING:
         try:

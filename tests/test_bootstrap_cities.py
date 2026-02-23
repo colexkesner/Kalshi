@@ -52,7 +52,9 @@ def test_bootstrap_writes_expected_city_structure(tmp_path: Path):
     assert "KXHIGHTEMP-MIA" in city["kalshi_series_tickers"]
     assert city["resolution_location_name"]
     assert city["nws_wfo"] == "MFL"
+    assert city["contract_terms_url"] == "https://example.com/terms.html"
     assert city["icao_station"] == "KMIA"
+    assert city["needs_manual_override"] is False
     assert not needs_manual
 
     out = tmp_path / "cities.yaml"

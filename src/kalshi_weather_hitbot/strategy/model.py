@@ -21,28 +21,34 @@ def evaluate_lock(
     p_no_locked: float = 0.01,
     station_uncertainty_f: float = 0.5,
 ) -> LockEval:
-    min_possible = observed_max - station_uncertainty_f
-    max_possible = max(observed_max, forecast_max_remaining + safety_bias_f) + station_uncertainty_f
+    min_possible = observed_max
+    max_possible = max(observed_max, forecast_max_remaining + safety_bias_f)
+    conservative_min = min_possible - station_uncertainty_f
+    conservative_max = max_possible + station_uncertainty_f
 
     if bracket_low is None and bracket_high is None:
         return LockEval("UNLOCKED", 0.5, min_possible, max_possible)
 
-    # "X or below" style: can only prove YES lock.
+    # "X or below" / upper-threshold market.
     if bracket_low is None and bracket_high is not None:
-        if max_possible < bracket_high:
+        if conservative_max <= bracket_high:
             return LockEval("LOCKED_YES", p_yes_locked, min_possible, max_possible)
+        if conservative_min > bracket_high:
+            return LockEval("LOCKED_NO", p_no_locked, min_possible, max_possible)
         return LockEval("UNLOCKED", 0.5, min_possible, max_possible)
 
-    # "X or above" style: can only prove NO lock.
+    # "X or above" / lower-threshold market.
     if bracket_high is None and bracket_low is not None:
-        if min_possible > bracket_low:
+        if conservative_min >= bracket_low:
+            return LockEval("LOCKED_YES", p_yes_locked, min_possible, max_possible)
+        if conservative_max < bracket_low:
             return LockEval("LOCKED_NO", p_no_locked, min_possible, max_possible)
         return LockEval("UNLOCKED", 0.5, min_possible, max_possible)
 
     assert bracket_low is not None and bracket_high is not None
 
-    if min_possible >= bracket_low and max_possible <= bracket_high:
+    if conservative_min >= bracket_low and conservative_max <= bracket_high:
         return LockEval("LOCKED_YES", p_yes_locked, min_possible, max_possible)
-    if min_possible > bracket_high or max_possible < bracket_low:
+    if conservative_min > bracket_high or conservative_max < bracket_low:
         return LockEval("LOCKED_NO", p_no_locked, min_possible, max_possible)
     return LockEval("UNLOCKED", 0.5, min_possible, max_possible)
