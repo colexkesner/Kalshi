@@ -16,6 +16,7 @@ class MetarClient:
     def __init__(self, base_url: str, user_agent: str, ttl_seconds: int = 60) -> None:
         self.base_url = base_url.rstrip("/")
         self.cache = TTLCache(ttl_seconds)
+        self._negative_ttl_seconds = min(30, max(5, int(ttl_seconds // 2) if ttl_seconds > 1 else 5))
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": user_agent})
 
@@ -28,13 +29,13 @@ class MetarClient:
             resp = self.session.get(
                 f"{self.base_url}/api/data/metar",
                 params={"ids": station, "format": "json", "hours": hours},
-                timeout=15,
+                timeout=30,
             )
             resp.raise_for_status()
         except requests.RequestException as exc:
             logger.warning("AviationWeather METAR request failed for station=%s error=%s", station, exc)
             data: list[dict[str, Any]] = []
-            self.cache.set(key, data)
+            self.cache.set(key, data, ttl_seconds=self._negative_ttl_seconds)
             return data
         try:
             data = resp.json()
@@ -51,7 +52,10 @@ class MetarClient:
         if not isinstance(data, list):
             logger.warning("AviationWeather METAR returned unexpected payload type for station=%s: %s", station, type(data).__name__)
             data = []
-        self.cache.set(key, data)
+        if data:
+            self.cache.set(key, data)
+        else:
+            self.cache.set(key, data, ttl_seconds=self._negative_ttl_seconds)
         return data
 
 

@@ -17,9 +17,17 @@ from kalshi_weather_hitbot.data.nws import NWSClient, max_forecast_temp_f
 from kalshi_weather_hitbot.db import DB
 from kalshi_weather_hitbot.kalshi.client import APIError, KalshiClient
 from kalshi_weather_hitbot.kalshi.models import normalize_orderbook
+from kalshi_weather_hitbot.strategy.calibration import build_lock_calibration
 from kalshi_weather_hitbot.strategy.execution import build_client_order_id_deterministic, select_exit_order, select_order
+from kalshi_weather_hitbot.strategy.fees import kalshi_fee_cents
 from kalshi_weather_hitbot.strategy.maker import maker_first_entry_price
 from kalshi_weather_hitbot.strategy.model import evaluate_lock
+from kalshi_weather_hitbot.strategy.order_maintenance import (
+    build_amend_payload,
+    order_age_seconds,
+    parse_order_price_cents,
+    should_amend,
+)
 from kalshi_weather_hitbot.strategy.risk import (
     check_entry_risk_limits,
     compute_cap_dollars,
@@ -27,6 +35,7 @@ from kalshi_weather_hitbot.strategy.risk import (
     compute_positions_exposure,
     enforce_cap,
 )
+from kalshi_weather_hitbot.strategy.sizing import compute_contracts
 from kalshi_weather_hitbot.strategy.screener import climate_window_start, parse_temperature_market
 
 app = typer.Typer(
@@ -83,6 +92,36 @@ def _cents_to_dollar_str(price_cents: int) -> str:
     return f"{(price_cents / 100.0):.4f}"
 
 
+def _build_calibration_lookup_if_enabled(cfg: AppConfig):
+    if not cfg.calibration.enabled:
+        return None
+    return build_lock_calibration(
+        db_path=cfg.db_path,
+        by_city=cfg.calibration.by_city,
+        buckets_hours_to_close=list(cfg.calibration.buckets_hours_to_close),
+        prior_alpha=cfg.calibration.prior_alpha,
+        prior_beta=cfg.calibration.prior_beta,
+        min_samples_per_bucket=cfg.calibration.min_samples_per_bucket,
+    )
+
+
+def _maybe_calibrated_p_yes(
+    *,
+    cfg: AppConfig,
+    base_p_yes: float,
+    city_key: str | None,
+    hours_to_close: float,
+    lock_status: str,
+    calibration_lookup,
+) -> float:
+    if not cfg.calibration.enabled or calibration_lookup is None:
+        return base_p_yes
+    try:
+        return float(calibration_lookup(city_key, hours_to_close, lock_status, base_p_yes))
+    except Exception:
+        return base_p_yes
+
+
 def resolve_trading_enabled(cli_flag: bool, cfg_flag: bool) -> bool:
     return cli_flag or cfg_flag
 
@@ -94,6 +133,83 @@ def order_aligned_with_lock(order_side: str, lock_status: str | None) -> bool:
     if lock_status == "LOCKED_NO":
         return side == "no"
     return False
+
+
+def _entry_fee_total_cents(cfg: AppConfig, price_cents: int, count: int) -> int:
+    if not cfg.fees.enabled or not cfg.fees.assume_maker_fee or count <= 0:
+        return 0
+    return kalshi_fee_cents(price_cents=price_cents, contracts=count, fee_kind="maker")
+
+
+def _entry_total_cost_cents(cfg: AppConfig, price_cents: int, count: int) -> int:
+    return (price_cents * count) + _entry_fee_total_cents(cfg, price_cents, count)
+
+
+def _entry_priority_key(entry: dict) -> tuple[float, int, float]:
+    decision = entry["decision"]
+    book = entry["book"]
+    close_ts = entry["close_ts"]
+    net_ev_cents = int(getattr(decision, "expected_net_ev_cents", 0) or 0)
+    price_cents = int(getattr(decision, "price_cents", 0) or 0)
+    fee_cents = int(getattr(decision, "expected_fee_cents", 0) or 0)
+    total_cost_cents = max(1, price_cents + fee_cents)
+    liquidity_size = int(book.yes_ask_size if getattr(decision, "side", None) == "YES" else book.no_ask_size)
+    return (net_ev_cents / total_cost_cents, liquidity_size, -close_ts.timestamp())
+
+
+def _set_order_price_field(order: dict, side: str, price_cents: int, send_price_in_dollars: bool) -> None:
+    if send_price_in_dollars:
+        if str(side).upper() == "YES":
+            order.pop("yes_price", None)
+            order["yes_price_dollars"] = _cents_to_dollar_str(int(price_cents))
+        else:
+            order.pop("no_price", None)
+            order["no_price_dollars"] = _cents_to_dollar_str(int(price_cents))
+    else:
+        if str(side).upper() == "YES":
+            order.pop("yes_price_dollars", None)
+            order["yes_price"] = int(price_cents)
+        else:
+            order.pop("no_price_dollars", None)
+            order["no_price"] = int(price_cents)
+
+
+def _place_entry_order_with_post_only_cross_fallback(
+    client: KalshiClient,
+    order: dict,
+    *,
+    ticker: str,
+    side: str,
+    cfg: AppConfig,
+) -> dict | None:
+    try:
+        return client.place_order(order)
+    except APIError as exc:
+        message = str(exc).lower()
+        if "order_already_exists" in message:
+            raise
+        if (not cfg.risk.post_only_cross_retry_once) or ("post" not in message or "cross" not in message):
+            raise
+        book = normalize_orderbook(client.get_orderbook(ticker))
+        current_implied_ask = book.best_yes_ask_cents if str(side).upper() == "YES" else book.best_no_ask_cents
+        previous_price_cents = parse_order_price_cents(order) or 1
+        if current_implied_ask is None:
+            console.print(f"[ORDER SKIP] ticker={ticker} post-only cross retry missing orderbook ask")
+            return None
+        retry_price_cents = max(1, min(int(current_implied_ask) - 1, int(previous_price_cents) - 1))
+        if retry_price_cents >= previous_price_cents:
+            console.print(f"[ORDER SKIP] ticker={ticker} post-only cross retry could not improve price")
+            return None
+        retry_order = dict(order)
+        _set_order_price_field(retry_order, side=side, price_cents=retry_price_cents, send_price_in_dollars=cfg.risk.send_price_in_dollars)
+        console.print(
+            f"[ORDER RETRY] ticker={ticker} post-only cross fallback repricing {previous_price_cents}->{retry_price_cents}"
+        )
+        try:
+            return client.place_order(retry_order)
+        except APIError as retry_exc:
+            console.print(f"[ORDER SKIP] ticker={ticker} post-only cross retry failed: {retry_exc}")
+            return None
 
 
 def _order_payload(
@@ -324,7 +440,7 @@ def init() -> None:
     console.print(f"Wrote config to {config_path}.")
 
 
-def _scan_once(cfg: AppConfig) -> list[dict]:
+def _scan_once(cfg: AppConfig, calibration_lookup=None) -> list[dict]:
     db = DB(cfg.db_path)
     client = KalshiClient(cfg)
     metar = MetarClient(cfg.data.aviationweather_base_url, cfg.user_agent, cfg.data.cache_ttl_seconds)
@@ -381,7 +497,14 @@ def _scan_once(cfg: AppConfig) -> list[dict]:
                     "min_possible": lock.min_possible,
                     "max_possible": lock.max_possible,
                     "lock_status": lock.lock_status,
-                    "p_yes": lock.p_yes,
+                    "p_yes": _maybe_calibrated_p_yes(
+                        cfg=cfg,
+                        base_p_yes=float(lock.p_yes),
+                        city_key=str(city_key),
+                        hours_to_close=float(hours_to_close),
+                        lock_status=str(lock.lock_status),
+                        calibration_lookup=calibration_lookup,
+                    ),
                     "reason": "lock-eval",
                     "hours_to_close": hours_to_close,
                     "close_ts": close_ts.isoformat(),
@@ -401,7 +524,7 @@ def scan() -> None:
     total_cities, usable_cities, skipped_cities = _city_mapping_counts(cities)
     console.print(f"Cities loaded: total={total_cities} usable={usable_cities} skipped={skipped_cities}")
     try:
-        candidates = _scan_once(cfg)
+        candidates = _scan_once(cfg, calibration_lookup=_build_calibration_lookup_if_enabled(cfg))
     except Exception as exc:
         console.print(f"Scan failed gracefully: {exc}")
         return
@@ -418,6 +541,33 @@ def scan() -> None:
             f"{c['forecast_max_remaining']:.1f}",
         )
     console.print(table)
+
+
+@app.command()
+def sync_settlements(
+    max_pages: int = typer.Option(5, "--max-pages", min=1),
+    limit: int = typer.Option(200, "--limit", min=1, max=500),
+) -> None:
+    """Fetch portfolio settlements and persist to SQLite."""
+    cfg = _load_cfg()
+    client = KalshiClient(cfg)
+    db = DB(cfg.db_path)
+    cursor: str | None = None
+    pages = 0
+    rows_inserted = 0
+    while pages < max_pages:
+        payload = client.get_settlements(limit=limit, cursor=cursor)
+        settlements = payload.get("settlements") or []
+        for settlement in settlements:
+            if isinstance(settlement, dict):
+                db.insert_settlement(settlement)
+                rows_inserted += 1
+        pages += 1
+        next_cursor = payload.get("cursor")
+        cursor = str(next_cursor) if next_cursor else None
+        if not cursor:
+            break
+    console.print(f"Settlements sync complete: pages={pages} rows_inserted={rows_inserted} next_cursor={cursor or ''}")
 
 
 @app.command()
@@ -447,6 +597,7 @@ def run(
     console.print(f"Cities loaded: total={total_cities} usable={usable_cities} skipped={skipped_cities}")
     console.print("DRY-RUN mode" if not effective_trading else "TRADING ENABLED")
     session_start_available_cash: float | None = None
+    calibration_lookup = _build_calibration_lookup_if_enabled(cfg)
     while RUNNING:
         try:
             cycle_counts: dict[str, int] = {
@@ -465,6 +616,10 @@ def run(
                 "entry_dry_run": 0,
                 "stale_orders_canceled": 0,
                 "stale_orders_cancel_failed": 0,
+                "aged_orders_canceled": 0,
+                "aged_orders_cancel_failed": 0,
+                "orders_amended": 0,
+                "orders_amend_failed": 0,
                 "exit_considered": 0,
                 "exit_not_eligible": 0,
                 "exit_decision_blocked": 0,
@@ -524,12 +679,18 @@ def run(
             effective_exposure_for_cap = max(current_exposure, session_reserved_cash)
             cash_floor_dollars = max(0.0, (session_start_available_cash or 0.0) - cap_dollars)
 
-            candidates = _scan_once(cfg)
+            candidates = _scan_once(cfg, calibration_lookup=calibration_lookup)
             lock_by_ticker = {
                 str(c.get("market_ticker")): str(c.get("lock_status") or "UNLOCKED")
                 for c in candidates
                 if c.get("market_ticker")
             }
+            candidate_by_ticker = {
+                str(c.get("market_ticker")): c
+                for c in candidates
+                if c.get("market_ticker")
+            }
+            cycle_orderbooks: dict[str, Any] = {}
             locked_yes = sum(1 for c in candidates if c.get("lock_status") == "LOCKED_YES")
             locked_no = sum(1 for c in candidates if c.get("lock_status") == "LOCKED_NO")
             console.print(
@@ -583,6 +744,92 @@ def run(
                     cycle_counts["stale_orders_cancel_failed"] += 1
                     remaining_active_orders.append(order)
             active_orders = remaining_active_orders
+
+            amend_attempts_this_cycle = 0
+            if cfg.risk.order_maintenance_enabled or cfg.risk.cancel_unfilled_after_minutes is not None:
+                now_utc = datetime.now(timezone.utc)
+                for order in active_orders:
+                    if str(order.get("action") or "").lower() != "buy":
+                        continue
+                    ticker = str(order.get("ticker") or order.get("market_ticker") or "")
+                    side = str(order.get("side") or "").lower()
+                    oid = str(order.get("order_id") or order.get("id") or "")
+                    if not ticker or side not in {"yes", "no"} or not oid:
+                        continue
+                    lock_status = lock_by_ticker.get(ticker)
+                    if not order_aligned_with_lock(side, lock_status):
+                        continue
+
+                    age_seconds = order_age_seconds(order, now_utc)
+                    if cfg.risk.cancel_unfilled_after_minutes is not None and age_seconds >= (cfg.risk.cancel_unfilled_after_minutes * 60):
+                        request_json = {"order_id": oid, "ticker": ticker, "reason": f"Age exceeded {cfg.risk.cancel_unfilled_after_minutes}m"}
+                        client_order_id = str(order.get("client_order_id") or f"cancel-{oid}")
+                        ticker_side_key = (ticker, side)
+                        if not effective_trading:
+                            console.print(f"[DRY-RUN CANCEL AGE] {request_json}")
+                            db.insert_order(ticker, client_order_id, request_json, {"dry_run": True}, "CANCEL_AGE_DRY_RUN")
+                            cycle_counts["aged_orders_canceled"] += 1
+                            existing_client_order_ids.discard(client_order_id)
+                            active_entry_orders_by_ticker_side.discard(ticker_side_key)
+                            continue
+                        try:
+                            cancel_resp = client.cancel_order(oid)
+                            console.print(cancel_resp)
+                            db.insert_order(ticker, client_order_id, request_json, cancel_resp, "CANCEL_AGE_SUBMITTED")
+                            cycle_counts["aged_orders_canceled"] += 1
+                            existing_client_order_ids.discard(client_order_id)
+                            active_entry_orders_by_ticker_side.discard(ticker_side_key)
+                            continue
+                        except APIError as exc:
+                            console.print(f"[CANCEL AGE ERROR] ticker={ticker} order_id={oid} error={exc}")
+                            cycle_counts["aged_orders_cancel_failed"] += 1
+                            continue
+
+                    if not cfg.risk.order_maintenance_enabled:
+                        continue
+                    if amend_attempts_this_cycle >= cfg.risk.amend_max_per_cycle:
+                        break
+                    c = candidate_by_ticker.get(ticker)
+                    if not c:
+                        continue
+                    if ticker not in cycle_orderbooks:
+                        cycle_orderbooks[ticker] = normalize_orderbook(client.get_orderbook(ticker))
+                    book = cycle_orderbooks[ticker]
+                    target_side = "YES" if side == "yes" else "NO"
+                    max_allowed = int((c["p_yes"] - cfg.risk.edge_buffer) * 100) if target_side == "YES" else int(((1 - c["p_yes"]) - cfg.risk.edge_buffer) * 100)
+                    maker = maker_first_entry_price(target_side, book, max_allowed, cfg.risk)
+                    if not maker.should_place or maker.price_cents is None:
+                        continue
+                    existing_price = parse_order_price_cents(order)
+                    if existing_price is None:
+                        continue
+                    if not should_amend(existing_price, int(maker.price_cents), age_seconds, cfg.risk):
+                        continue
+                    amend_count = int(order.get("remaining_count") or order.get("count") or 1)
+                    amend_payload = build_amend_payload(
+                        order_id=oid,
+                        ticker=ticker,
+                        side=target_side,
+                        action=str(order.get("action") or "buy"),
+                        desired_price_cents=int(maker.price_cents),
+                        count=max(1, amend_count),
+                        cfg_price_in_dollars_flag=cfg.risk.send_price_in_dollars,
+                    )
+                    if not effective_trading:
+                        console.print(f"[DRY-RUN AMEND] {amend_payload}")
+                        db.insert_order(ticker, str(order.get("client_order_id") or f"amend-{oid}"), amend_payload, {"dry_run": True}, "AMEND_DRY_RUN")
+                        cycle_counts["orders_amended"] += 1
+                        amend_attempts_this_cycle += 1
+                        continue
+                    try:
+                        amend_resp = client.amend_order(oid, amend_payload)
+                        console.print(amend_resp)
+                        db.insert_order(ticker, str(order.get("client_order_id") or f"amend-{oid}"), amend_payload, amend_resp, "AMENDED")
+                        cycle_counts["orders_amended"] += 1
+                        amend_attempts_this_cycle += 1
+                    except APIError as exc:
+                        console.print(f"[AMEND ERROR] ticker={ticker} order_id={oid} error={exc}")
+                        cycle_counts["orders_amend_failed"] += 1
 
             if cfg.risk.strategy_mode == "MAX_CYCLES" and cfg.risk.enable_exit_sells:
                 for position in positions:
@@ -652,6 +899,10 @@ def run(
                         f"cash_failed={cycle_counts['cash_failed']} "
                         f"stale_orders_canceled={cycle_counts['stale_orders_canceled']} "
                         f"stale_orders_cancel_failed={cycle_counts['stale_orders_cancel_failed']} "
+                        f"aged_orders_canceled={cycle_counts['aged_orders_canceled']} "
+                        f"aged_orders_cancel_failed={cycle_counts['aged_orders_cancel_failed']} "
+                        f"orders_amended={cycle_counts['orders_amended']} "
+                        f"orders_amend_failed={cycle_counts['orders_amend_failed']} "
                         f"entry_dry_run={cycle_counts['entry_dry_run']} "
                         f"entry_submitted={cycle_counts['entry_submitted']} "
                     f"duplicate_order_skipped={cycle_counts['duplicate_order_skipped']} "
@@ -665,6 +916,7 @@ def run(
                 time.sleep(int(interval_seconds))
                 continue
 
+            entry_opportunities: list[dict] = []
             for c in candidates:
                 if c["lock_status"] == "UNLOCKED":
                     cycle_counts["entry_unlocked"] += 1
@@ -672,8 +924,11 @@ def run(
                 if cfg.risk.strategy_mode == "MAX_CYCLES" and c["hours_to_close"] > cfg.risk.max_exit_hours_to_close:
                     cycle_counts["entry_outside_exit_window"] += 1
                     continue
-                book = normalize_orderbook(client.get_orderbook(c["market_ticker"]))
-                decision = select_order(c["lock_status"], c["p_yes"], book, cfg.risk)
+                ticker_key = str(c["market_ticker"])
+                if ticker_key not in cycle_orderbooks:
+                    cycle_orderbooks[ticker_key] = normalize_orderbook(client.get_orderbook(ticker_key))
+                book = cycle_orderbooks[ticker_key]
+                decision = select_order(c["lock_status"], c["p_yes"], book, cfg.risk, fees_cfg=cfg.fees)
                 if not decision.should_trade:
                     if decision.reason == "Missing orderbook prices":
                         cycle_counts["orderbook_missing"] += 1
@@ -687,7 +942,7 @@ def run(
                         cycle_counts["liquidity_too_low"] += 1
                         if len(blocked_examples["liquidity_too_low"]) < 5:
                             blocked_examples["liquidity_too_low"].append(str(c["market_ticker"]))
-                    elif decision.reason == "Price above edge-adjusted threshold":
+                    elif decision.reason in {"Price above edge-adjusted threshold", "Net edge below threshold"}:
                         cycle_counts["edge_failed"] += 1
                         if len(blocked_examples["edge_failed"]) < 5:
                             blocked_examples["edge_failed"].append(str(c["market_ticker"]))
@@ -698,8 +953,38 @@ def run(
                 maker = maker_first_entry_price(target_side, book, max_allowed, cfg.risk)
                 if maker.should_place and maker.price_cents is not None:
                     decision.price_cents = maker.price_cents
+                    confidence = c["p_yes"] if target_side == "YES" else (1 - c["p_yes"])
+                    decision.expected_fee_cents = _entry_fee_total_cents(cfg, int(decision.price_cents), 1)
+                    decision.expected_net_ev_cents = int(round(confidence * 100)) - int(decision.price_cents) - int(decision.expected_fee_cents or 0)
 
-                order_notional = decision.price_cents / 100
+                entry_opportunities.append(
+                    {
+                        "candidate": c,
+                        "decision": decision,
+                        "book": book,
+                        "close_ts": datetime.fromisoformat(c["close_ts"]),
+                    }
+                )
+
+            for entry in sorted(entry_opportunities, key=_entry_priority_key, reverse=True):
+                c = entry["candidate"]
+                decision = entry["decision"]
+                bankroll_for_sizing = min(available_cash_dollars, cap_dollars)
+                if cfg.risk.strategy_mode == "MAX_CYCLES":
+                    bankroll_for_sizing = min(bankroll_for_sizing, max(0.0, cap_dollars - effective_exposure_for_cap))
+                side_prob = c["p_yes"] if decision.side == "YES" else (1 - c["p_yes"])
+                count = compute_contracts(
+                    bankroll_dollars=bankroll_for_sizing,
+                    price_cents=int(decision.price_cents),
+                    p=float(side_prob),
+                    cfg_sizing=cfg.sizing,
+                    risk=cfg.risk,
+                )
+                if count <= 0:
+                    continue
+
+                order_notional = (int(decision.price_cents) * count) / 100.0
+                total_order_cost_dollars = _entry_total_cost_cents(cfg, int(decision.price_cents), count) / 100.0
                 risk_ok, risk_reason = check_entry_risk_limits(
                     ticker=str(c["market_ticker"]),
                     new_order_notional=order_notional,
@@ -718,10 +1003,10 @@ def run(
                 if not enforce_cap(effective_exposure_for_cap, order_notional, cap_dollars):
                     cycle_counts["cap_failed"] += 1
                     continue
-                if (available_cash_dollars - order_notional) < cash_floor_dollars:
+                if (available_cash_dollars - total_order_cost_dollars) < cash_floor_dollars:
                     cycle_counts["cap_failed"] += 1
                     continue
-                if available_cash_dollars < order_notional:
+                if available_cash_dollars < total_order_cost_dollars:
                     cycle_counts["cash_failed"] += 1
                     continue
 
@@ -730,7 +1015,7 @@ def run(
                     cfg=cfg,
                     ticker=c["market_ticker"],
                     decision=decision,
-                    count=1,
+                    count=count,
                     tif=cfg.risk.maker_time_in_force,
                     post_only=True,
                     strategy_mode=cfg.risk.strategy_mode,
@@ -741,7 +1026,7 @@ def run(
                     db.insert_order(c["market_ticker"], order["client_order_id"], order, {"dry_run": True}, "DRY_RUN")
                     current_exposure += order_notional
                     effective_exposure_for_cap += order_notional
-                    available_cash_dollars = max(0.0, available_cash_dollars - order_notional)
+                    available_cash_dollars = max(0.0, available_cash_dollars - total_order_cost_dollars)
                     cycle_counts["entry_dry_run"] += 1
                     continue
                 ticker_side_key = (str(order.get("ticker") or ""), str(order.get("side") or "").lower())
@@ -752,7 +1037,15 @@ def run(
                     cycle_counts["duplicate_order_skipped"] += 1
                     continue
                 try:
-                    resp = client.place_order(order)
+                    resp = _place_entry_order_with_post_only_cross_fallback(
+                        client,
+                        order,
+                        ticker=str(c["market_ticker"]),
+                        side=str(decision.side),
+                        cfg=cfg,
+                    )
+                    if resp is None:
+                        continue
                 except APIError as exc:
                     if "order_already_exists" in str(exc):
                         cycle_counts["duplicate_order_skipped"] += 1
@@ -765,9 +1058,18 @@ def run(
                 db.insert_order(c["market_ticker"], order["client_order_id"], order, resp, "SUBMITTED")
                 current_exposure += order_notional
                 effective_exposure_for_cap += order_notional
-                available_cash_dollars = max(0.0, available_cash_dollars - order_notional)
+                available_cash_dollars = max(0.0, available_cash_dollars - total_order_cost_dollars)
                 existing_client_order_ids.add(str(order["client_order_id"]))
                 active_entry_orders_by_ticker_side.add(ticker_side_key)
+                active_orders.append(
+                    {
+                        "ticker": c["market_ticker"],
+                        "action": "buy",
+                        "side": str(order.get("side") or ""),
+                        "count": count,
+                        "buy_max_cost_dollars": order_notional,
+                    }
+                )
                 cycle_counts["entry_submitted"] += 1
             console.print(
                 "Cycle gates: "
@@ -784,6 +1086,10 @@ def run(
                 f"cash_failed={cycle_counts['cash_failed']} "
                 f"stale_orders_canceled={cycle_counts['stale_orders_canceled']} "
                 f"stale_orders_cancel_failed={cycle_counts['stale_orders_cancel_failed']} "
+                f"aged_orders_canceled={cycle_counts['aged_orders_canceled']} "
+                f"aged_orders_cancel_failed={cycle_counts['aged_orders_cancel_failed']} "
+                f"orders_amended={cycle_counts['orders_amended']} "
+                f"orders_amend_failed={cycle_counts['orders_amend_failed']} "
                 f"entry_dry_run={cycle_counts['entry_dry_run']} "
                 f"entry_submitted={cycle_counts['entry_submitted']} "
                 f"duplicate_order_skipped={cycle_counts['duplicate_order_skipped']} "

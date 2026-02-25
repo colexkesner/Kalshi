@@ -6,9 +6,10 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from kalshi_weather_hitbot.config import RiskConfig
+from kalshi_weather_hitbot.config import FeesConfig, RiskConfig
 from kalshi_weather_hitbot.kalshi.models import OrderBookTop
 from kalshi_weather_hitbot.kalshi.pricing import quantize_price
+from kalshi_weather_hitbot.strategy.fees import fee_per_contract_cents, kalshi_fee_cents
 
 
 _CLIENT_ORDER_ID_ALLOWED_RE = re.compile(r"[^A-Za-z0-9_:=+/\\-]")
@@ -25,14 +26,23 @@ class ExecutionDecision:
     action: str | None = None
     price_cents: int | None = None
     reason: str = ""
+    expected_net_ev_cents: int | None = None
+    expected_fee_cents: int | None = None
 
 
-def select_order(lock_status: str, p_yes: float, book: OrderBookTop, risk: RiskConfig) -> ExecutionDecision:
+def select_order(
+    lock_status: str,
+    p_yes: float,
+    book: OrderBookTop,
+    risk: RiskConfig,
+    model_prob: float | None = None,
+    fees_cfg: FeesConfig | None = None,
+) -> ExecutionDecision:
     if lock_status == "UNLOCKED":
         return ExecutionDecision(False, reason="Not locked")
 
     target_side = "YES" if lock_status == "LOCKED_YES" else "NO"
-    confidence = p_yes if target_side == "YES" else (1 - p_yes)
+    confidence = model_prob if model_prob is not None else (p_yes if target_side == "YES" else (1 - p_yes))
     if confidence < risk.p_confidence_gate:
         return ExecutionDecision(False, reason="Confidence below gate")
     ask = book.best_yes_ask_cents if target_side == "YES" else book.best_no_ask_cents
@@ -46,11 +56,31 @@ def select_order(lock_status: str, p_yes: float, book: OrderBookTop, risk: RiskC
     if size < risk.min_liquidity_contracts:
         return ExecutionDecision(False, reason="Insufficient liquidity")
 
-    max_price_prob = p_yes - risk.edge_buffer if target_side == "YES" else (1 - p_yes) - risk.edge_buffer
+    max_price_prob = confidence - risk.edge_buffer
     max_price_cents = int(max_price_prob * 100)
     if ask > max_price_cents:
         return ExecutionDecision(False, reason="Price above edge-adjusted threshold")
-    return ExecutionDecision(True, side=target_side, action="BUY", price_cents=quantize_price(ask, tick_size=1, side="buy"), reason="Locked and edge positive")
+
+    expected_fee_cents = 0
+    if fees_cfg and fees_cfg.enabled and fees_cfg.assume_maker_fee:
+        expected_fee_cents = fee_per_contract_cents(kalshi_fee_cents(ask, 1, "maker"), 1)
+    expected_net_ev_cents = int(round(confidence * 100)) - ask - expected_fee_cents
+    if fees_cfg and fees_cfg.enabled and expected_net_ev_cents < risk.min_net_edge_cents:
+        return ExecutionDecision(
+            False,
+            reason="Net edge below threshold",
+            expected_net_ev_cents=expected_net_ev_cents,
+            expected_fee_cents=expected_fee_cents,
+        )
+    return ExecutionDecision(
+        True,
+        side=target_side,
+        action="BUY",
+        price_cents=quantize_price(ask, tick_size=1, side="buy"),
+        reason=f"Locked and edge positive (net_ev_cents={expected_net_ev_cents})",
+        expected_net_ev_cents=expected_net_ev_cents,
+        expected_fee_cents=expected_fee_cents,
+    )
 
 
 def select_exit_order(position: dict[str, Any], book: OrderBookTop, risk: RiskConfig) -> ExecutionDecision:

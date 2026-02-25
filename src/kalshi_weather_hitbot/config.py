@@ -14,6 +14,28 @@ class CapitalConfig(BaseModel):
     cap_value: float = 100.0
 
 
+class FeesConfig(BaseModel):
+    enabled: bool = True
+    assume_maker_fee: bool = False
+
+
+class SizingConfig(BaseModel):
+    mode: Literal["fixed", "fractional_kelly"] = "fixed"
+    fixed_contracts: int = 1
+    kelly_fraction: float = 0.10
+    max_contracts_per_order: int = 10
+    max_order_cost_dollars: float = 25.0
+
+
+class CalibrationConfig(BaseModel):
+    enabled: bool = False
+    by_city: bool = False
+    buckets_hours_to_close: list[float] = Field(default_factory=lambda: [1.0, 3.0, 6.0, 24.0])
+    prior_alpha: float = 1.0
+    prior_beta: float = 1.0
+    min_samples_per_bucket: int = 5
+
+
 class RiskConfig(BaseModel):
     p_confidence_gate: float = 0.90
     lock_yes_probability: float = 0.99
@@ -28,6 +50,13 @@ class RiskConfig(BaseModel):
     max_orders_per_market: int = 2
     min_liquidity_contracts: int = 5
     max_spread_cents: int = 15
+    min_net_edge_cents: int = 2
+    order_maintenance_enabled: bool = False
+    amend_min_age_seconds: int = 60
+    amend_max_per_cycle: int = 5
+    amend_min_tick: int = 1
+    cancel_unfilled_after_minutes: int | None = None
+    post_only_cross_retry_once: bool = True
     strategy_mode: Literal["HOLD_TO_SETTLEMENT", "MAX_CYCLES"] = "HOLD_TO_SETTLEMENT"
     take_profit_cents: int = 98
     min_profit_cents: int = 1
@@ -61,6 +90,9 @@ class AppConfig(BaseModel):
     db_path: str = "./kalshi_weather_hitbot.db"
     trading_enabled: bool = False
     capital: CapitalConfig = Field(default_factory=CapitalConfig)
+    fees: FeesConfig = Field(default_factory=FeesConfig)
+    sizing: SizingConfig = Field(default_factory=SizingConfig)
+    calibration: CalibrationConfig = Field(default_factory=CalibrationConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
     data: DataConfig = Field(default_factory=DataConfig)
     scan: ScanConfig = Field(default_factory=ScanConfig)

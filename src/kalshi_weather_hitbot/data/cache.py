@@ -25,5 +25,6 @@ class TTLCache:
             return None
         return item.value
 
-    def set(self, key: str, value: Any) -> None:
-        self._cache[key] = CacheItem(value=value, expires_at=time.time() + self.ttl_seconds)
+    def set(self, key: str, value: Any, ttl_seconds: int | None = None) -> None:
+        ttl = self.ttl_seconds if ttl_seconds is None else max(0, int(ttl_seconds))
+        self._cache[key] = CacheItem(value=value, expires_at=time.time() + ttl)

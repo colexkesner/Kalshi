@@ -140,12 +140,41 @@ class KalshiClient:
     def get_balance(self) -> dict[str, Any]:
         return self._request("GET", "/trade-api/v2/portfolio/balance", authenticated=True)
 
+    def get_account_limits(self) -> dict[str, Any]:
+        payload = self._request("GET", "/trade-api/v2/account/limits", authenticated=True)
+        if not isinstance(payload, dict):
+            raise APIError(
+                "Malformed /trade-api/v2/account/limits response: expected JSON object, "
+                f"got {type(payload).__name__}"
+            )
+        return payload
+
     def place_order(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/trade-api/v2/portfolio/orders", json_body=payload, authenticated=True)
 
     def get_positions(self) -> list[dict[str, Any]]:
         payload = self._request("GET", "/trade-api/v2/portfolio/positions", authenticated=True)
         return payload.get("positions", [])
+
+    def get_settlements(self, limit: int = 200, cursor: str | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {"limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        payload = self._request("GET", "/trade-api/v2/portfolio/settlements", params=params, authenticated=True)
+        if not isinstance(payload, dict):
+            raise APIError(
+                "Malformed /trade-api/v2/portfolio/settlements response: expected JSON object, "
+                f"got {type(payload).__name__}"
+            )
+        settlements = payload.get("settlements")
+        if settlements is None:
+            payload["settlements"] = []
+        elif not isinstance(settlements, list):
+            raise APIError(
+                "Malformed /trade-api/v2/portfolio/settlements response: expected 'settlements' list or null, "
+                f"got {type(settlements).__name__}"
+            )
+        return payload
 
     def list_orders(self, status: str = "open") -> list[dict[str, Any]]:
         payload = self._request("GET", "/trade-api/v2/portfolio/orders", params={"status": status}, authenticated=True)

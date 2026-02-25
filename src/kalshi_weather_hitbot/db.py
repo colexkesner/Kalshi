@@ -56,6 +56,16 @@ CREATE TABLE IF NOT EXISTS city_mapping_snapshots (
   yaml_text TEXT NOT NULL,
   source TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS settlements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts_ingested TEXT NOT NULL,
+  ticker TEXT,
+  market_result TEXT,
+  revenue_cents INTEGER,
+  fee_cost_dollars_str TEXT,
+  settled_time TEXT,
+  raw_json TEXT
+);
 """
 
 
@@ -122,6 +132,23 @@ class DB:
             con.execute(
                 "INSERT INTO orders(ts, market_ticker, client_order_id, request_json, response_json, status) VALUES (?, ?, ?, ?, ?, ?)",
                 (self._ts(), market_ticker, client_order_id, json.dumps(request_json), json.dumps(response_json), status),
+            )
+
+    def insert_settlement(self, payload: dict[str, Any]) -> None:
+        with self.connect() as con:
+            con.execute(
+                """INSERT INTO settlements(
+                ts_ingested, ticker, market_result, revenue_cents, fee_cost_dollars_str, settled_time, raw_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    self._ts(),
+                    payload.get("ticker") or payload.get("market_ticker"),
+                    payload.get("market_result") or payload.get("result") or payload.get("settlement_result"),
+                    payload.get("revenue_cents") or payload.get("revenue"),
+                    str(payload.get("fee_cost_dollars") or payload.get("fee_cost_dollars_str") or ""),
+                    payload.get("settled_time") or payload.get("settlement_time"),
+                    json.dumps(payload),
+                ),
             )
 
     def save_capital(self, cap_mode: str, cap_value: float, derived_cap_dollars: float) -> None:
