@@ -12,6 +12,9 @@ Base URLs are selected automatically from `KALSHI_ENV`:
 - demo: `https://demo-api.kalshi.co`
 - production: `https://api.elections.kalshi.com`
 
+By default, runtime env vars win over YAML (`env`, `base_url`, `db_path`). Startup now warns on mismatches.
+Set `runtime.allow_yaml_base_url: true` only if you intentionally want to override the env-selected base URL.
+
 ## Install
 ### macOS / Linux
 ```bash
@@ -90,6 +93,15 @@ streamlit run src/kalshi_weather_hitbot/monitor_dashboard.py
 
 Aggressive demo MAX_CYCLES example config:
 - `configs/config.max_cycles_demo.aggressive.example.yaml`
+
+Profile overlays (copy values into `configs/config.yaml` as needed):
+- `configs/profiles/max_upside_controlled.yaml`
+- `configs/profiles/max_turnover_compounding.yaml`
+- `configs/profiles/aggressive_expansion.yaml`
+
+Recommended API hygiene:
+- Set `user_agent` to include a contact handle/email for NWS requests.
+- Use reasonable scan intervals and avoid excessive request rates to AviationWeather.
 
 ## Tests
 ```bash

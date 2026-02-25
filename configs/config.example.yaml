@@ -31,10 +31,18 @@ risk:
   send_price_in_dollars: true
 data:
   cache_ttl_seconds: 60
+  metar_timeout_seconds: 15
+  metar_station_cooldown_seconds: 600
+  metar_max_fallbacks: 2
+  nws_timeout_seconds: 15
   aviationweather_base_url: https://aviationweather.gov
   nws_base_url: https://api.weather.gov
   awc_station_cache_url: https://aviationweather.gov/data/cache/stations.cache.json.gz
   awc_station_cache_path: .cache/awc/stations.cache.json.gz
+runtime:
+  allow_yaml_base_url: false
+  warn_on_env_mismatch: true
+  warn_on_db_path_mismatch: true
 scan:
   tags: Weather
   limit_series: 30

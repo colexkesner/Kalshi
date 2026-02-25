@@ -1,0 +1,23 @@
+capital:
+  cap_mode: percent
+  cap_value: 50.0
+
+fees:
+  enabled: true
+  assume_maker_fee: true
+  assume_taker_fee_on_exit: true
+
+sizing:
+  mode: fractional_kelly
+  kelly_fraction: 0.10
+  max_contracts_per_order: 8
+  max_order_cost_dollars: 15.0
+
+risk:
+  strategy_mode: HOLD_TO_SETTLEMENT
+  max_open_positions: 8
+  max_per_market_notional: 15.0
+  max_orders_per_market: 2
+  min_net_edge_cents: 2
+  send_price_in_dollars: true
+

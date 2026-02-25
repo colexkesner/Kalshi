@@ -60,14 +60,35 @@ except ValueError:
 def _load_cfg() -> AppConfig:
     env = EnvSettings.load()
     cfg = load_yaml_config(Path(env.kalshi_config_path))
+    yaml_env = cfg.env
+    yaml_base_url = cfg.base_url
+    yaml_db_path = cfg.db_path
+    chosen_env = env.kalshi_env
+    chosen_base = _choose_base(chosen_env)
     if env.kalshi_api_key_id:
         cfg.api_key_id = env.kalshi_api_key_id
     if env.kalshi_private_key_path:
         cfg.private_key_path = env.kalshi_private_key_path
     cfg.trading_enabled = env.kalshi_trading_enabled or cfg.trading_enabled
+    if cfg.runtime.warn_on_env_mismatch and str(yaml_env) != str(chosen_env):
+        console.print(
+            f"[bold yellow]CONFIG WARNING[/bold yellow] YAML env={yaml_env!r} but runtime KALSHI_ENV={chosen_env!r}. "
+            f"Using runtime env."
+        )
+    if cfg.runtime.warn_on_env_mismatch and str(yaml_base_url or "") != str(chosen_base):
+        console.print(
+            f"[bold yellow]CONFIG WARNING[/bold yellow] YAML base_url={yaml_base_url!r} does not match env-selected "
+            f"base_url={chosen_base!r}."
+        )
+    if cfg.runtime.warn_on_db_path_mismatch and str(yaml_db_path or "") != str(env.kalshi_db_path):
+        console.print(
+            f"[bold yellow]CONFIG WARNING[/bold yellow] YAML db_path={yaml_db_path!r} but runtime KALSHI_DB_PATH="
+            f"{env.kalshi_db_path!r}. Using runtime db_path."
+        )
     cfg.db_path = env.kalshi_db_path
-    cfg.env = env.kalshi_env
-    cfg.base_url = _choose_base(cfg.env)
+    cfg.env = chosen_env
+    if not (cfg.runtime.allow_yaml_base_url and str(cfg.base_url or "").strip()):
+        cfg.base_url = chosen_base
     return cfg
 
 
@@ -440,11 +461,23 @@ def init() -> None:
     console.print(f"Wrote config to {config_path}.")
 
 
-def _scan_once(cfg: AppConfig, calibration_lookup=None) -> list[dict]:
+def _scan_once(
+    cfg: AppConfig,
+    calibration_lookup=None,
+    client: KalshiClient | None = None,
+    metar: MetarClient | None = None,
+    nws: NWSClient | None = None,
+) -> list[dict]:
     db = DB(cfg.db_path)
-    client = KalshiClient(cfg)
-    metar = MetarClient(cfg.data.aviationweather_base_url, cfg.user_agent, cfg.data.cache_ttl_seconds)
-    nws = NWSClient(cfg.data.nws_base_url, cfg.user_agent, cfg.data.cache_ttl_seconds)
+    client = client or KalshiClient(cfg)
+    metar = metar or MetarClient(
+        cfg.data.aviationweather_base_url,
+        cfg.user_agent,
+        cfg.data.cache_ttl_seconds,
+        cfg.data.metar_timeout_seconds,
+        cfg.data.metar_station_cooldown_seconds,
+    )
+    nws = nws or NWSClient(cfg.data.nws_base_url, cfg.user_agent, cfg.data.cache_ttl_seconds, cfg.data.nws_timeout_seconds)
 
     cities = load_city_mapping(Path("./configs/cities.yaml"))
     if not cities:
@@ -473,7 +506,12 @@ def _scan_once(cfg: AppConfig, calibration_lookup=None) -> list[dict]:
                 if hours_to_close < cfg.risk.min_hours_to_close or hours_to_close > cfg.risk.max_hours_to_close:
                     continue
                 start_ts = climate_window_start(close_ts, city["tz"])
-                metars = metar.fetch_metar(city["icao_station"])
+                primary_station = str(city["icao_station"])
+                station_fallbacks = city.get("icao_station_fallbacks") or []
+                if not isinstance(station_fallbacks, list):
+                    station_fallbacks = []
+                stations = [primary_station] + [str(s) for s in station_fallbacks if s][: cfg.data.metar_max_fallbacks]
+                metars, used_station, metar_status = metar.fetch_metar_with_fallbacks(stations)
                 obs_max = max_observed_temp_f(metars, start_ts, now_utc)
                 if obs_max is None:
                     continue
@@ -506,6 +544,11 @@ def _scan_once(cfg: AppConfig, calibration_lookup=None) -> list[dict]:
                         calibration_lookup=calibration_lookup,
                     ),
                     "reason": "lock-eval",
+                    "metar_station_primary": primary_station,
+                    "metar_station_used": used_station,
+                    "metar_status": metar_status,
+                    "metar_station_candidates_count": len(stations),
+                    "metar_station_list": stations,
                     "hours_to_close": hours_to_close,
                     "close_ts": close_ts.isoformat(),
                 }
@@ -581,6 +624,14 @@ def run(
     effective_trading = resolve_trading_enabled(enable_trading, cfg.trading_enabled)
     db = DB(cfg.db_path)
     client = KalshiClient(cfg)
+    metar = MetarClient(
+        cfg.data.aviationweather_base_url,
+        cfg.user_agent,
+        cfg.data.cache_ttl_seconds,
+        cfg.data.metar_timeout_seconds,
+        cfg.data.metar_station_cooldown_seconds,
+    )
+    nws = NWSClient(cfg.data.nws_base_url, cfg.user_agent, cfg.data.cache_ttl_seconds, cfg.data.nws_timeout_seconds)
 
     if effective_trading and cfg.env == "production":
         typed = typer.prompt("Type I_UNDERSTAND_THIS_WILL_TRADE_REAL_MONEY to continue")
@@ -679,7 +730,7 @@ def run(
             effective_exposure_for_cap = max(current_exposure, session_reserved_cash)
             cash_floor_dollars = max(0.0, (session_start_available_cash or 0.0) - cap_dollars)
 
-            candidates = _scan_once(cfg, calibration_lookup=calibration_lookup)
+            candidates = _scan_once(cfg, calibration_lookup=calibration_lookup, client=client, metar=metar, nws=nws)
             lock_by_ticker = {
                 str(c.get("market_ticker")): str(c.get("lock_status") or "UNLOCKED")
                 for c in candidates
@@ -851,7 +902,7 @@ def run(
                         cycle_counts["exit_not_eligible"] += 1
                         continue
                     book = normalize_orderbook(client.get_orderbook(ticker))
-                    exit_decision = select_exit_order(position, book, cfg.risk)
+                    exit_decision = select_exit_order(position, book, cfg.risk, cfg.fees)
                     if not exit_decision.should_trade:
                         cycle_counts["exit_decision_blocked"] += 1
                         continue

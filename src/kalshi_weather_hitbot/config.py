@@ -17,6 +17,7 @@ class CapitalConfig(BaseModel):
 class FeesConfig(BaseModel):
     enabled: bool = True
     assume_maker_fee: bool = False
+    assume_taker_fee_on_exit: bool = True
 
 
 class SizingConfig(BaseModel):
@@ -69,6 +70,10 @@ class RiskConfig(BaseModel):
 
 class DataConfig(BaseModel):
     cache_ttl_seconds: int = 60
+    metar_timeout_seconds: int = 15
+    metar_station_cooldown_seconds: int = 600
+    metar_max_fallbacks: int = 2
+    nws_timeout_seconds: int = 15
     aviationweather_base_url: str = "https://aviationweather.gov"
     nws_base_url: str = "https://api.weather.gov"
     awc_station_cache_url: str = "https://aviationweather.gov/data/cache/stations.cache.json.gz"
@@ -79,6 +84,12 @@ class ScanConfig(BaseModel):
     tags: str = "Weather"
     limit_series: int = 30
     limit_markets: int = 100
+
+
+class RuntimeConfig(BaseModel):
+    allow_yaml_base_url: bool = False
+    warn_on_env_mismatch: bool = True
+    warn_on_db_path_mismatch: bool = True
 
 
 class AppConfig(BaseModel):
@@ -96,6 +107,7 @@ class AppConfig(BaseModel):
     risk: RiskConfig = Field(default_factory=RiskConfig)
     data: DataConfig = Field(default_factory=DataConfig)
     scan: ScanConfig = Field(default_factory=ScanConfig)
+    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
 
 
 class EnvSettings(BaseModel):

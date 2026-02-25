@@ -13,9 +13,10 @@ logger = logging.getLogger(__name__)
 
 
 class NWSClient:
-    def __init__(self, base_url: str, user_agent: str, ttl_seconds: int = 60) -> None:
+    def __init__(self, base_url: str, user_agent: str, ttl_seconds: int = 60, timeout_seconds: int = 15) -> None:
         self.base_url = base_url.rstrip("/")
         self.cache = TTLCache(ttl_seconds)
+        self.timeout_seconds = max(1, int(timeout_seconds))
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": user_agent, "Accept": "application/geo+json"})
 
@@ -23,7 +24,7 @@ class NWSClient:
         cached = self.cache.get(url)
         if cached is not None:
             return cached
-        resp = self.session.get(url, timeout=15)
+        resp = self.session.get(url, timeout=self.timeout_seconds)
         resp.raise_for_status()
         try:
             data = resp.json()

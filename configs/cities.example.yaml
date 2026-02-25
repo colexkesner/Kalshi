@@ -5,6 +5,7 @@ chicago:
   nws_wfo: LOT
   nws_location_label: "CHICAGO MIDWAY AP"
   icao_station: KMDW
+  icao_station_fallbacks: ["KORD"]
   lat: 41.7868
   lon: -87.7522
   tz: America/Chicago

@@ -83,7 +83,12 @@ def select_order(
     )
 
 
-def select_exit_order(position: dict[str, Any], book: OrderBookTop, risk: RiskConfig) -> ExecutionDecision:
+def select_exit_order(
+    position: dict[str, Any],
+    book: OrderBookTop,
+    risk: RiskConfig,
+    fees_cfg: FeesConfig | None = None,
+) -> ExecutionDecision:
     if not risk.enable_exit_sells:
         return ExecutionDecision(False, reason="Exit sells disabled")
 
@@ -106,15 +111,23 @@ def select_exit_order(position: dict[str, Any], book: OrderBookTop, risk: RiskCo
     entry_price = int(position.get("avg_price") or position.get("average_price") or 0)
     if exit_bid < risk.take_profit_cents:
         return ExecutionDecision(False, reason="Take-profit not reached")
-    if entry_price and (exit_bid - entry_price) < risk.min_profit_cents:
-        return ExecutionDecision(False, reason="Minimum profit threshold not reached")
+    if entry_price:
+        required_profit_cents = risk.min_profit_cents
+        if fees_cfg and fees_cfg.enabled and fees_cfg.assume_taker_fee_on_exit:
+            total_fee_cents = kalshi_fee_cents(exit_bid, contracts, "taker")
+            exit_fee_per_contract_cents = fee_per_contract_cents(total_fee_cents, contracts)
+            net_profit_cents = (exit_bid - entry_price) - exit_fee_per_contract_cents
+            if net_profit_cents < required_profit_cents:
+                return ExecutionDecision(False, reason="Minimum profit threshold not reached (net of exit fee)")
+        elif (exit_bid - entry_price) < required_profit_cents:
+            return ExecutionDecision(False, reason="Minimum profit threshold not reached")
 
     return ExecutionDecision(
         True,
         side=side,
         action="SELL",
         price_cents=quantize_price(exit_bid, tick_size=1, side="sell"),
-        reason="Take-profit exit",
+        reason="Take-profit exit" if entry_price else "Take-profit exit (entry price unknown; fee check skipped)",
     )
 
 

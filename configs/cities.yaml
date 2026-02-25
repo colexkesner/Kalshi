@@ -1,1 +1,466 @@
-{}
+atlanta_for_feb_24:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/GLOBALTEMPERATURE.pdf
+  icao_station: KATL
+  icao_station_fallbacks:
+  - KPDK
+  kalshi_series_tickers:
+  - KXHIGHTATL
+  lat: 34.533
+  lon: 136.672
+  needs_manual_override: true
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: Atlanta for Feb 24
+  resolution_source_type: metar_nws_combo
+  tz: null
+austin:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/AUSHIGH.pdf
+  icao_station: KAUS
+  icao_station_fallbacks:
+  - KJXI
+  - KGGG
+  kalshi_series_tickers:
+  - KXHIGHAUS
+  - HIGHAUS
+  lat: 32.528801
+  lon: -94.971702
+  needs_manual_override: false
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: None, TX
+  resolution_source_type: ticker_fallback
+  tz: America/Chicago
+boston:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/GLOBALTEMPERATURE.pdf
+  icao_station: KBOS
+  icao_station_fallbacks:
+  - KBED
+  - KBVY
+  kalshi_series_tickers:
+  - KXHIGHTBOS
+  lat: 34.533
+  lon: 136.672
+  needs_manual_override: true
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: Boston for Feb 24
+  resolution_source_type: metar_nws_combo
+  tz: null
+chicago:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/CHIHIGH.pdf
+  icao_station: KMDW
+  icao_station_fallbacks:
+  - KORD
+  - KLOT
+  kalshi_series_tickers:
+  - HIGHCHI
+  - KXHIGHCHI
+  lat: 24.286
+  lon: 9.464
+  needs_manual_override: true
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: Chicago Midway, IL
+  resolution_source_type: metar_nws_combo
+  tz: null
+dallas_for_feb_24:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/GLOBALTEMPERATURE.pdf
+  icao_station: KDFW
+  icao_station_fallbacks:
+  - KDAL
+  - KADS
+  kalshi_series_tickers:
+  - KXHIGHTDAL
+  lat: 34.533
+  lon: 136.672
+  needs_manual_override: true
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: Dallas for Feb 24
+  resolution_source_type: metar_nws_combo
+  tz: null
+highny:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/NHIGH.pdf
+  icao_station: KLGA
+  icao_station_fallbacks:
+  - KJFK
+  - KEWR
+  kalshi_series_tickers:
+  - HIGHNY
+  lat: 40.77945
+  lon: -73.88027
+  needs_manual_override: false
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: None, NY
+  resolution_source_type: ticker_fallback
+  tz: America/New_York
+highny0:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/HIGH.pdf
+  icao_station: KLGA
+  icao_station_fallbacks:
+  - KJFK
+  - KEWR
+  kalshi_series_tickers:
+  - HIGHNY0
+  lat: 40.77945
+  lon: -73.88027
+  needs_manual_override: false
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: None, NY
+  resolution_source_type: ticker_fallback
+  tz: America/New_York
+houston_for_feb_24:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/GLOBALTEMPERATURE.pdf
+  icao_station: KIAH
+  icao_station_fallbacks:
+  - KHOU
+  - KEFD
+  kalshi_series_tickers:
+  - KXHIGHTHOU
+  lat: 34.533
+  lon: 136.672
+  needs_manual_override: true
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: Houston for Feb 24
+  resolution_source_type: metar_nws_combo
+  tz: null
+kxdenhigh:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/DENHIGH.pdf
+  icao_station: KDEN
+  icao_station_fallbacks:
+  - KBJC
+  - KAPA
+  kalshi_series_tickers:
+  - KXDENHIGH
+  lat: 39.84657
+  lon: -104.65623
+  needs_manual_override: false
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: None, CO
+  resolution_source_type: ticker_fallback
+  tz: America/Denver
+kxhighden:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/DENHIGH.pdf
+  icao_station: KDEN
+  icao_station_fallbacks:
+  - KBJC
+  - KAPA
+  kalshi_series_tickers:
+  - KXHIGHDEN
+  lat: 39.84657
+  lon: -104.65623
+  needs_manual_override: false
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: None, CO
+  resolution_source_type: ticker_fallback
+  tz: America/Denver
+kxhighhou:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/HOUHIGH.pdf
+  icao_station: KHOU
+  icao_station_fallbacks:
+  - KIAH
+  - KEFD
+  kalshi_series_tickers:
+  - KXHIGHHOU
+  lat: 29.64582
+  lon: -95.28214
+  needs_manual_override: false
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: None, TX
+  resolution_source_type: ticker_fallback
+  tz: America/Chicago
+kxhighny:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/NHIGH.pdf
+  icao_station: KLGA
+  icao_station_fallbacks:
+  - KJFK
+  - KEWR
+  kalshi_series_tickers:
+  - KXHIGHNY
+  lat: 40.77945
+  lon: -73.88027
+  needs_manual_override: false
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: None, NY
+  resolution_source_type: ticker_fallback
+  tz: America/New_York
+kxhighny0:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/HIGH.pdf
+  icao_station: KLGA
+  icao_station_fallbacks:
+  - KJFK
+  - KEWR
+  kalshi_series_tickers:
+  - KXHIGHNY0
+  lat: 40.77945
+  lon: -73.88027
+  needs_manual_override: false
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: None, NY
+  resolution_source_type: ticker_fallback
+  tz: America/New_York
+kxhighou:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/HOUHIGH.pdf
+  icao_station: KHOU
+  icao_station_fallbacks:
+  - KIAH
+  - KEFD
+  kalshi_series_tickers:
+  - KXHIGHOU
+  lat: 29.64582
+  lon: -95.28214
+  needs_manual_override: false
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: None, TX
+  resolution_source_type: ticker_fallback
+  tz: America/Chicago
+kxhightempden:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/HIGHTEMP.pdf
+  icao_station: KDEN
+  icao_station_fallbacks:
+  - KBJC
+  - KAPA
+  kalshi_series_tickers:
+  - KXHIGHTEMPDEN
+  lat: 39.84657
+  lon: -104.65623
+  needs_manual_override: false
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: None, CO
+  resolution_source_type: ticker_fallback
+  tz: America/Denver
+kxhouhigh:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/HOUHIGH.pdf
+  icao_station: KHOU
+  icao_station_fallbacks:
+  - KIAH
+  - KEFD
+  kalshi_series_tickers:
+  - KXHOUHIGH
+  lat: 29.64582
+  lon: -95.28214
+  needs_manual_override: false
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: None, TX
+  resolution_source_type: ticker_fallback
+  tz: America/Chicago
+kxphilhigh:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/PHILHIGH.pdf
+  icao_station: KPHL
+  icao_station_fallbacks:
+  - KILG
+  - KACY
+  kalshi_series_tickers:
+  - KXPHILHIGH
+  lat: 39.87328
+  lon: -75.22682
+  needs_manual_override: false
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: None, PA
+  resolution_source_type: ticker_fallback
+  tz: America/New_York
+la:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/LAXHIGH.pdf
+  icao_station: KLAX
+  icao_station_fallbacks:
+  - KLGB
+  - KBUR
+  kalshi_series_tickers:
+  - KXHIGHLAX
+  lat: 33.93817
+  lon: -118.3866
+  needs_manual_override: false
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: None, CA
+  resolution_source_type: ticker_fallback
+  tz: America/Los_Angeles
+las_vegas_for_feb_24:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/GLOBALTEMPERATURE.pdf
+  icao_station: KLAS
+  icao_station_fallbacks:
+  - KVGT
+  - KHND
+  kalshi_series_tickers:
+  - KXHIGHTLV
+  lat: 34.533
+  lon: 136.672
+  needs_manual_override: true
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: Las Vegas for Feb 24
+  resolution_source_type: metar_nws_combo
+  tz: null
+miami:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/MIAHIGH.pdf
+  icao_station: KMIA
+  icao_station_fallbacks:
+  - KTMB
+  - KFLL
+  kalshi_series_tickers:
+  - KXHIGHMIA
+  - HIGHMIA
+  lat: 25.78806
+  lon: -80.31692
+  needs_manual_override: false
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: Miami International Airport
+  resolution_source_type: metar_nws_combo
+  tz: America/New_York
+minneapolis_for_feb_24:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/GLOBALTEMPERATURE.pdf
+  icao_station: KMSP
+  icao_station_fallbacks:
+  - KSTP
+  - KFCM
+  kalshi_series_tickers:
+  - KXHIGHTMIN
+  lat: 34.533
+  lon: 136.672
+  needs_manual_override: true
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: Minneapolis for Feb 24
+  resolution_source_type: metar_nws_combo
+  tz: null
+new_orleans_for_feb_24:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/GLOBALTEMPERATURE.pdf
+  icao_station: KMSY
+  icao_station_fallbacks:
+  - KNEW
+  - KBTR
+  kalshi_series_tickers:
+  - KXHIGHTNOLA
+  lat: 34.533
+  lon: 136.672
+  needs_manual_override: true
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: New Orleans for Feb 24
+  resolution_source_type: metar_nws_combo
+  tz: null
+oklahoma_city_for_feb_24:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/GLOBALTEMPERATURE.pdf
+  icao_station: KOKC
+  icao_station_fallbacks:
+  - KTIK
+  - KPWA
+  kalshi_series_tickers:
+  - KXHIGHTOKC
+  lat: 34.533
+  lon: 136.672
+  needs_manual_override: true
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: Oklahoma City for Feb 24
+  resolution_source_type: metar_nws_combo
+  tz: null
+philadelphia_international_airport:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/PHILHIGH.pdf
+  icao_station: KPHL
+  icao_station_fallbacks:
+  - KILG
+  - KACY
+  kalshi_series_tickers:
+  - KXHIGHPHIL
+  lat: 39.87328
+  lon: -75.22682
+  needs_manual_override: false
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: Philadelphia International Airport
+  resolution_source_type: metar_nws_combo
+  tz: America/New_York
+phoenix:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/GLOBALTEMPERATURE.pdf
+  icao_station: KPHX
+  icao_station_fallbacks:
+  - KFFZ
+  - KIWA
+  kalshi_series_tickers:
+  - KXHIGHTPHX
+  lat: 34.533
+  lon: 136.672
+  needs_manual_override: true
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: Phoenix for Feb 24
+  resolution_source_type: metar_nws_combo
+  tz: null
+san_antonio_for_feb_24:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/GLOBALTEMPERATURE.pdf
+  icao_station: KSAT
+  icao_station_fallbacks:
+  - KSSF
+  - KBAZ
+  kalshi_series_tickers:
+  - KXHIGHTSATX
+  lat: 34.533
+  lon: 136.672
+  needs_manual_override: true
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: San Antonio for Feb 24
+  resolution_source_type: metar_nws_combo
+  tz: null
+san_francisco_for_feb_24:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/GLOBALTEMPERATURE.pdf
+  icao_station: KSFO
+  icao_station_fallbacks:
+  - KOAK
+  - KSJC
+  kalshi_series_tickers:
+  - KXHIGHTSFO
+  lat: 34.533
+  lon: 136.672
+  needs_manual_override: true
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: San Francisco for Feb 24
+  resolution_source_type: metar_nws_combo
+  tz: null
+seattle_for_feb_24:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/GLOBALTEMPERATURE.pdf
+  icao_station: KSEA
+  icao_station_fallbacks:
+  - KBFI
+  - KPAE
+  kalshi_series_tickers:
+  - KXHIGHTSEA
+  lat: 34.533
+  lon: 136.672
+  needs_manual_override: true
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: Seattle for Feb 24
+  resolution_source_type: metar_nws_combo
+  tz: null
+washington_dc_for_feb_24:
+  contract_terms_url: https://kalshi-public-docs.s3.amazonaws.com/contract_terms/GLOBALTEMPERATURE.pdf
+  icao_station: KDCA
+  icao_station_fallbacks:
+  - KIAD
+  - KBWI
+  kalshi_series_tickers:
+  - KXHIGHTDC
+  lat: 34.533
+  lon: 136.672
+  needs_manual_override: true
+  nws_location_label: null
+  nws_wfo: null
+  resolution_location_name: Washington DC for Feb 24
+  resolution_source_type: metar_nws_combo
+  tz: null
