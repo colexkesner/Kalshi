@@ -21,6 +21,7 @@ from kalshi_weather_hitbot.strategy.execution import build_client_order_id_deter
 from kalshi_weather_hitbot.strategy.maker import maker_first_entry_price
 from kalshi_weather_hitbot.strategy.model import evaluate_lock
 from kalshi_weather_hitbot.strategy.risk import (
+    check_entry_risk_limits,
     compute_cap_dollars,
     compute_open_orders_exposure,
     compute_positions_exposure,
@@ -80,6 +81,19 @@ def _parse_cap_override(cap: str | None, available_dollars: float, cfg: AppConfi
 
 def _cents_to_dollar_str(price_cents: int) -> str:
     return f"{(price_cents / 100.0):.4f}"
+
+
+def resolve_trading_enabled(cli_flag: bool, cfg_flag: bool) -> bool:
+    return cli_flag or cfg_flag
+
+
+def order_aligned_with_lock(order_side: str, lock_status: str | None) -> bool:
+    side = str(order_side).lower()
+    if lock_status == "LOCKED_YES":
+        return side == "yes"
+    if lock_status == "LOCKED_NO":
+        return side == "no"
+    return False
 
 
 def _order_payload(
@@ -414,10 +428,11 @@ def run(
 ) -> None:
     """Run main loop; defaults to dry-run."""
     cfg = _load_cfg()
+    effective_trading = resolve_trading_enabled(enable_trading, cfg.trading_enabled)
     db = DB(cfg.db_path)
     client = KalshiClient(cfg)
 
-    if enable_trading and cfg.env == "production":
+    if effective_trading and cfg.env == "production":
         typed = typer.prompt("Type I_UNDERSTAND_THIS_WILL_TRADE_REAL_MONEY to continue")
         if typed.strip() != "I_UNDERSTAND_THIS_WILL_TRADE_REAL_MONEY":
             raise typer.Exit("Confirmation mismatch; aborting.")
@@ -430,7 +445,7 @@ def run(
         cities = load_city_mapping(Path("./configs/cities.example.yaml"))
     total_cities, usable_cities, skipped_cities = _city_mapping_counts(cities)
     console.print(f"Cities loaded: total={total_cities} usable={usable_cities} skipped={skipped_cities}")
-    console.print("DRY-RUN mode" if not enable_trading else "TRADING ENABLED")
+    console.print("DRY-RUN mode" if not effective_trading else "TRADING ENABLED")
     session_start_available_cash: float | None = None
     while RUNNING:
         try:
@@ -441,10 +456,15 @@ def run(
                 "spread_too_wide": 0,
                 "liquidity_too_low": 0,
                 "edge_failed": 0,
+                "risk_positions_limit_failed": 0,
+                "risk_orders_per_market_failed": 0,
+                "risk_per_market_notional_failed": 0,
                 "cap_failed": 0,
                 "cash_failed": 0,
                 "entry_submitted": 0,
                 "entry_dry_run": 0,
+                "stale_orders_canceled": 0,
+                "stale_orders_cancel_failed": 0,
                 "exit_considered": 0,
                 "exit_not_eligible": 0,
                 "exit_decision_blocked": 0,
@@ -505,6 +525,11 @@ def run(
             cash_floor_dollars = max(0.0, (session_start_available_cash or 0.0) - cap_dollars)
 
             candidates = _scan_once(cfg)
+            lock_by_ticker = {
+                str(c.get("market_ticker")): str(c.get("lock_status") or "UNLOCKED")
+                for c in candidates
+                if c.get("market_ticker")
+            }
             locked_yes = sum(1 for c in candidates if c.get("lock_status") == "LOCKED_YES")
             locked_no = sum(1 for c in candidates if c.get("lock_status") == "LOCKED_NO")
             console.print(
@@ -520,6 +545,44 @@ def run(
                 f"cash_floor=${cash_floor_dollars:.2f} "
                 f"cap=${cap_dollars:.2f}"
             )
+
+            remaining_active_orders: list[dict] = []
+            for order in active_orders:
+                action = str(order.get("action") or "").lower()
+                ticker = str(order.get("ticker") or order.get("market_ticker") or "")
+                side = str(order.get("side") or "").lower()
+                oid = str(order.get("order_id") or order.get("id") or "")
+                if action != "buy" or not ticker or not side or not oid:
+                    remaining_active_orders.append(order)
+                    continue
+                lock_status = lock_by_ticker.get(ticker)
+                if order_aligned_with_lock(side, lock_status):
+                    remaining_active_orders.append(order)
+                    continue
+
+                reason = f"Stale buy order: side={side} lock_status={lock_status or 'MISSING'}"
+                request_json = {"order_id": oid, "ticker": ticker, "reason": reason}
+                client_order_id = str(order.get("client_order_id") or f"cancel-{oid}")
+                ticker_side_key = (ticker, side)
+                if not effective_trading:
+                    console.print(f"[DRY-RUN CANCEL] {request_json}")
+                    db.insert_order(ticker, client_order_id, request_json, {"dry_run": True}, "CANCEL_DRY_RUN")
+                    cycle_counts["stale_orders_canceled"] += 1
+                    existing_client_order_ids.discard(client_order_id)
+                    active_entry_orders_by_ticker_side.discard(ticker_side_key)
+                    continue
+                try:
+                    cancel_resp = client.cancel_order(oid)
+                    console.print(cancel_resp)
+                    db.insert_order(ticker, client_order_id, request_json, cancel_resp, "CANCEL_SUBMITTED")
+                    cycle_counts["stale_orders_canceled"] += 1
+                    existing_client_order_ids.discard(client_order_id)
+                    active_entry_orders_by_ticker_side.discard(ticker_side_key)
+                except APIError as exc:
+                    console.print(f"[CANCEL ERROR] ticker={ticker} order_id={oid} error={exc}")
+                    cycle_counts["stale_orders_cancel_failed"] += 1
+                    remaining_active_orders.append(order)
+            active_orders = remaining_active_orders
 
             if cfg.risk.strategy_mode == "MAX_CYCLES" and cfg.risk.enable_exit_sells:
                 for position in positions:
@@ -556,7 +619,7 @@ def run(
                         strategy_mode=cfg.risk.strategy_mode,
                         cycle_key=cycle_key,
                     )
-                    if not enable_trading:
+                    if not effective_trading:
                         console.print(f"[DRY-RUN EXIT] {exit_order}")
                         db.insert_order(ticker, exit_order["client_order_id"], exit_order, {"dry_run": True}, "DRY_RUN")
                         cycle_counts["exit_dry_run"] += 1
@@ -580,12 +643,17 @@ def run(
                     f"entry_outside_exit_window={cycle_counts['entry_outside_exit_window']} "
                     f"orderbook_missing={cycle_counts['orderbook_missing']} "
                     f"spread_too_wide={cycle_counts['spread_too_wide']} "
-                    f"liquidity_too_low={cycle_counts['liquidity_too_low']} "
-                    f"edge_failed={cycle_counts['edge_failed']} "
-                    f"cap_failed={cycle_counts['cap_failed']} "
-                    f"cash_failed={cycle_counts['cash_failed']} "
-                    f"entry_dry_run={cycle_counts['entry_dry_run']} "
-                    f"entry_submitted={cycle_counts['entry_submitted']} "
+                        f"liquidity_too_low={cycle_counts['liquidity_too_low']} "
+                        f"edge_failed={cycle_counts['edge_failed']} "
+                        f"risk_positions_limit_failed={cycle_counts['risk_positions_limit_failed']} "
+                        f"risk_orders_per_market_failed={cycle_counts['risk_orders_per_market_failed']} "
+                        f"risk_per_market_notional_failed={cycle_counts['risk_per_market_notional_failed']} "
+                        f"cap_failed={cycle_counts['cap_failed']} "
+                        f"cash_failed={cycle_counts['cash_failed']} "
+                        f"stale_orders_canceled={cycle_counts['stale_orders_canceled']} "
+                        f"stale_orders_cancel_failed={cycle_counts['stale_orders_cancel_failed']} "
+                        f"entry_dry_run={cycle_counts['entry_dry_run']} "
+                        f"entry_submitted={cycle_counts['entry_submitted']} "
                     f"duplicate_order_skipped={cycle_counts['duplicate_order_skipped']} "
                     f"ticker_side_guard_skipped={cycle_counts['ticker_side_guard_skipped']} "
                     f"exit_considered={cycle_counts['exit_considered']} "
@@ -632,6 +700,21 @@ def run(
                     decision.price_cents = maker.price_cents
 
                 order_notional = decision.price_cents / 100
+                risk_ok, risk_reason = check_entry_risk_limits(
+                    ticker=str(c["market_ticker"]),
+                    new_order_notional=order_notional,
+                    positions=positions,
+                    active_orders=active_orders,
+                    risk=cfg.risk,
+                )
+                if not risk_ok:
+                    if risk_reason == "Max open positions reached":
+                        cycle_counts["risk_positions_limit_failed"] += 1
+                    elif risk_reason == "Max orders per market reached":
+                        cycle_counts["risk_orders_per_market_failed"] += 1
+                    elif risk_reason == "Max per-market notional exceeded":
+                        cycle_counts["risk_per_market_notional_failed"] += 1
+                    continue
                 if not enforce_cap(effective_exposure_for_cap, order_notional, cap_dollars):
                     cycle_counts["cap_failed"] += 1
                     continue
@@ -653,7 +736,7 @@ def run(
                     strategy_mode=cfg.risk.strategy_mode,
                     cycle_key=f"ENTRY-{close_key}",
                 )
-                if not enable_trading:
+                if not effective_trading:
                     console.print(f"[DRY-RUN] {order}")
                     db.insert_order(c["market_ticker"], order["client_order_id"], order, {"dry_run": True}, "DRY_RUN")
                     current_exposure += order_notional
@@ -694,8 +777,13 @@ def run(
                 f"spread_too_wide={cycle_counts['spread_too_wide']} "
                 f"liquidity_too_low={cycle_counts['liquidity_too_low']} "
                 f"edge_failed={cycle_counts['edge_failed']} "
+                f"risk_positions_limit_failed={cycle_counts['risk_positions_limit_failed']} "
+                f"risk_orders_per_market_failed={cycle_counts['risk_orders_per_market_failed']} "
+                f"risk_per_market_notional_failed={cycle_counts['risk_per_market_notional_failed']} "
                 f"cap_failed={cycle_counts['cap_failed']} "
                 f"cash_failed={cycle_counts['cash_failed']} "
+                f"stale_orders_canceled={cycle_counts['stale_orders_canceled']} "
+                f"stale_orders_cancel_failed={cycle_counts['stale_orders_cancel_failed']} "
                 f"entry_dry_run={cycle_counts['entry_dry_run']} "
                 f"entry_submitted={cycle_counts['entry_submitted']} "
                 f"duplicate_order_skipped={cycle_counts['duplicate_order_skipped']} "

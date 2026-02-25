@@ -32,6 +32,9 @@ def select_order(lock_status: str, p_yes: float, book: OrderBookTop, risk: RiskC
         return ExecutionDecision(False, reason="Not locked")
 
     target_side = "YES" if lock_status == "LOCKED_YES" else "NO"
+    confidence = p_yes if target_side == "YES" else (1 - p_yes)
+    if confidence < risk.p_confidence_gate:
+        return ExecutionDecision(False, reason="Confidence below gate")
     ask = book.best_yes_ask_cents if target_side == "YES" else book.best_no_ask_cents
     bid = book.best_yes_bid_cents if target_side == "YES" else book.best_no_bid_cents
     size = book.yes_ask_size if target_side == "YES" else book.no_ask_size

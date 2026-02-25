@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 import requests
@@ -16,6 +17,34 @@ logger = logging.getLogger(__name__)
 
 class APIError(RuntimeError):
     pass
+
+
+class TransientAPIError(APIError):
+    pass
+
+
+class PermanentAPIError(APIError):
+    pass
+
+
+class UnauthorizedError(PermanentAPIError):
+    pass
+
+
+class RateLimitError(TransientAPIError):
+    def __init__(self, message: str, retry_after_seconds: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
+
+def _parse_retry_after_seconds(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        parsed = float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, parsed)
 
 
 class KalshiClient:
@@ -43,7 +72,7 @@ class KalshiClient:
 
     @retry(
         reraise=True,
-        retry=retry_if_exception_type((requests.RequestException, APIError)),
+        retry=retry_if_exception_type((requests.RequestException, TransientAPIError)),
         wait=wait_exponential(multiplier=1, min=1, max=16),
         stop=stop_after_attempt(4),
     )
@@ -59,13 +88,21 @@ class KalshiClient:
                 timeout=15,
             )
         except requests.RequestException as exc:
-            raise APIError(f"Network error while calling {path}: {exc}") from exc
+            raise TransientAPIError(f"Network error while calling {path}: {exc}") from exc
         if response.status_code == 401:
-            raise APIError("Unauthorized (401). Check API key id, private key path, and environment base URL.")
-        if response.status_code == 429 or response.status_code >= 500:
-            raise APIError(f"Transient API error: {response.status_code} {response.text}")
+            raise UnauthorizedError("Unauthorized (401). Check API key id, private key path, and environment base URL.")
+        if response.status_code == 429:
+            retry_after_seconds = _parse_retry_after_seconds(getattr(response, "headers", {}).get("Retry-After"))
+            if retry_after_seconds is not None:
+                time.sleep(min(retry_after_seconds, 30.0))
+            raise RateLimitError(
+                f"Rate limited (429): {getattr(response, 'text', '')}",
+                retry_after_seconds=retry_after_seconds,
+            )
+        if response.status_code >= 500:
+            raise TransientAPIError(f"Transient API error: {response.status_code} {response.text}")
         if response.status_code >= 400:
-            raise APIError(f"API error {response.status_code}: {response.text}")
+            raise PermanentAPIError(f"API error {response.status_code}: {response.text}")
         return response.json() if response.text else {}
 
     def list_series(self, tags: str | None = "Weather", category: str | None = None) -> list[dict[str, Any]]:
