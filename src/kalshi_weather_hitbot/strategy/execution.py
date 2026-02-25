@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -8,6 +9,13 @@ from typing import Any
 from kalshi_weather_hitbot.config import RiskConfig
 from kalshi_weather_hitbot.kalshi.models import OrderBookTop
 from kalshi_weather_hitbot.kalshi.pricing import quantize_price
+
+
+_CLIENT_ORDER_ID_ALLOWED_RE = re.compile(r"[^A-Za-z0-9_:=+/\\-]")
+
+
+def _sanitize_client_order_id_component(value: str) -> str:
+    return _CLIENT_ORDER_ID_ALLOWED_RE.sub("-", value)
 
 
 @dataclass
@@ -78,7 +86,8 @@ def select_exit_order(position: dict[str, Any], book: OrderBookTop, risk: RiskCo
 
 
 def build_client_order_id(market_ticker: str) -> str:
-    return f"hitbot-{market_ticker}-{uuid.uuid4().hex[:12]}"
+    safe_ticker = _sanitize_client_order_id_component(market_ticker)
+    return f"hitbot-{safe_ticker}-{uuid.uuid4().hex[:12]}"
 
 
 def build_client_order_id_deterministic(
@@ -92,4 +101,5 @@ def build_client_order_id_deterministic(
 ) -> str:
     raw = f"{market_ticker}|{side}|{action}|{price_cents}|{count}|{strategy_mode}|{cycle_key}"
     digest = hashlib.sha256(raw.encode()).hexdigest()[:20]
-    return f"hitbot-{market_ticker}-{digest}"
+    safe_ticker = _sanitize_client_order_id_component(market_ticker)
+    return f"hitbot-{safe_ticker}-{digest}"

@@ -25,6 +25,7 @@ kalshi-hitbot = "kalshi_weather_hitbot.cli:app"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.2.0"]
+monitor = ["streamlit>=1.40.0"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

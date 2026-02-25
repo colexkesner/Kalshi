@@ -26,6 +26,13 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e .[dev]
 ```
+For the local monitoring dashboard:
+```powershell
+pip install -e .[dev,monitor]
+```
+
+First-time setup walkthrough:
+- `FIRST_STARTUP.txt`
 
 ## Bootstrap all climate cities
 Generate a station-accurate mapping from Kalshi Climate series and contract terms:
@@ -41,7 +48,7 @@ This command:
 - writes `configs/cities.yaml`
 - snapshots YAML to SQLite (`city_mapping_snapshots`)
 
-Set `--tags ""` to fetch all tags.
+Set `--tags " "` (PowerShell-safe) to fetch all tags.
 
 If station resolution fails, city stays in YAML and is reported in a manual-override list.
 
@@ -58,13 +65,31 @@ Safety defaults:
 ```bash
 kalshi-hitbot init
 kalshi-hitbot bootstrap-cities --overwrite
-kalshi-hitbot bootstrap-cities --overwrite --tags ""
+kalshi-hitbot bootstrap-cities --overwrite --tags " "
 kalshi-hitbot scan
 kalshi-hitbot run
 kalshi-hitbot run --cap 150
 kalshi-hitbot run --cap 20%
 kalshi-hitbot run --enable-trading
 ```
+
+## Monitoring
+Terminal output already shows:
+- cycle summaries (candidates, locks, positions, open orders, exposure)
+- submitted order responses (entries/exits)
+
+SQLite (`kalshi_weather_hitbot.db`) stores:
+- `orders`
+- `run_evaluations`
+- `market_snapshots`
+
+Optional Streamlit dashboard (read-only, local):
+```powershell
+streamlit run src/kalshi_weather_hitbot/monitor_dashboard.py
+```
+
+Aggressive demo MAX_CYCLES example config:
+- `configs/config.max_cycles_demo.aggressive.example.yaml`
 
 ## Tests
 ```bash

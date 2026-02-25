@@ -40,7 +40,11 @@ def _signal_handler(_sig, _frame):
     RUNNING = False
 
 
-signal.signal(signal.SIGINT, _signal_handler)
+try:
+    signal.signal(signal.SIGINT, _signal_handler)
+except ValueError:
+    # Streamlit and some embedded runtimes import this module outside the main thread.
+    pass
 
 
 def _load_cfg() -> AppConfig:
@@ -124,7 +128,11 @@ def _order_payload(
 
 
 def _is_high_temp_series(series_ticker: str) -> bool:
-    return "HIGHTEMP" in series_ticker.upper() or "HIGH-TEMP" in series_ticker.upper()
+    t = series_ticker.upper()
+    # Kalshi uses multiple historical naming schemes (e.g. KXHIGHTEMP-CHI, KXHIGHDEN, HIGHNY).
+    if "LOW" in t or "SNOW" in t or "RAIN" in t:
+        return False
+    return ("HIGHTEMP" in t) or ("HIGH-TEMP" in t) or ("HIGH" in t)
 
 
 def _city_mapping_counts(cities: dict) -> tuple[int, int, int]:
@@ -135,6 +143,44 @@ def _city_mapping_counts(cities: dict) -> tuple[int, int, int]:
         if city.get("icao_station") and city.get("lat") is not None and city.get("lon") is not None and city.get("tz")
     )
     return total, usable, total - usable
+
+
+def _bootstrap_enrich_series_with_market_terms(client: KalshiClient, series_list: list[dict]) -> list[dict]:
+    enriched: list[dict] = []
+    status_attempts = ["open", "closed", "settled"]
+    for series in series_list:
+        item = dict(series)
+        series_ticker = str(item.get("ticker") or item.get("series_ticker") or "")
+        if not series_ticker:
+            enriched.append(item)
+            continue
+
+        markets: list[dict] = []
+        if hasattr(client, "list_markets"):
+            for status in status_attempts:
+                try:
+                    markets = client.list_markets(series_ticker=series_ticker, status=status, limit=20)
+                except Exception:
+                    markets = []
+                if markets:
+                    break
+
+        for market in markets:
+            if not item.get("contract_terms_url") and market.get("contract_terms_url"):
+                item["contract_terms_url"] = market.get("contract_terms_url")
+            if not item.get("contract_terms_text"):
+                rules_text = " ".join(
+                    str(market.get(k, ""))
+                    for k in ["rules_primary", "rules", "title", "subtitle", "yes_sub_title", "no_sub_title"]
+                    if market.get(k) is not None
+                ).strip()
+                if rules_text:
+                    item["contract_terms_text"] = rules_text
+            if item.get("contract_terms_url") or item.get("contract_terms_text"):
+                break
+
+        enriched.append(item)
+    return enriched
 
 
 @app.command("bootstrap-cities")
@@ -178,6 +224,7 @@ def bootstrap_cities(
         raise typer.Exit(code=1)
     total_series_seen = len(series)
     high_temp_series = [s for s in series if is_daily_high_temp_series(s)]
+    high_temp_series = _bootstrap_enrich_series_with_market_terms(client, high_temp_series)
     mapping, needs_manual_override = build_city_mapping(
         high_temp_series,
         station_cache_url=cfg.data.awc_station_cache_url,
@@ -212,6 +259,14 @@ def bootstrap_cities(
     )
     console.print(f"Series seen: {total_series_seen}")
     console.print(f"High-temp series used: {len(high_temp_series)}")
+    if total_series_seen and not high_temp_series:
+        sample = [
+            f"{str(s.get('ticker') or s.get('series_ticker') or '<no-ticker>')} | {str(s.get('title') or s.get('name') or '')}"
+            for s in series[:5]
+        ]
+        console.print("High-temp filter matched 0 series. Sample series:")
+        for line in sample:
+            console.print(f"  - {line}")
     console.print(f"Wrote {len(mapping)} city mappings to {out_path}")
     console.print(f"Resolved stations: {resolved_count}")
     console.print(f"Unresolved stations: {len(mapping) - resolved_count}")
@@ -376,35 +431,119 @@ def run(
     total_cities, usable_cities, skipped_cities = _city_mapping_counts(cities)
     console.print(f"Cities loaded: total={total_cities} usable={usable_cities} skipped={skipped_cities}")
     console.print("DRY-RUN mode" if not enable_trading else "TRADING ENABLED")
+    session_start_available_cash: float | None = None
     while RUNNING:
         try:
+            cycle_counts: dict[str, int] = {
+                "entry_unlocked": 0,
+                "entry_outside_exit_window": 0,
+                "orderbook_missing": 0,
+                "spread_too_wide": 0,
+                "liquidity_too_low": 0,
+                "edge_failed": 0,
+                "cap_failed": 0,
+                "cash_failed": 0,
+                "entry_submitted": 0,
+                "entry_dry_run": 0,
+                "exit_considered": 0,
+                "exit_not_eligible": 0,
+                "exit_decision_blocked": 0,
+                "exit_submitted": 0,
+                "exit_dry_run": 0,
+                "duplicate_order_skipped": 0,
+                "ticker_side_guard_skipped": 0,
+            }
+            blocked_examples: dict[str, list[str]] = {
+                "orderbook_missing": [],
+                "edge_failed": [],
+                "spread_too_wide": [],
+                "liquidity_too_low": [],
+            }
             balance = client.get_balance() if cfg.api_key_id else {"balance": 0}
             available = _available_dollars(balance)
+            available_cash_dollars = available
             cap_dollars = _parse_cap_override(cap, available, cfg)
 
             positions = client.get_positions() if cfg.api_key_id else []
             open_orders = client.list_orders(status="open") if cfg.api_key_id else []
-            current_exposure = compute_positions_exposure(positions) + compute_open_orders_exposure(open_orders)
+            resting_orders: list[dict] = []
+            if cfg.api_key_id:
+                try:
+                    resting_orders = client.list_orders(status="resting")
+                except APIError:
+                    resting_orders = []
+            active_orders_by_id: dict[str, dict] = {}
+            for order in [*open_orders, *resting_orders]:
+                oid = str(order.get("order_id") or order.get("id") or "")
+                if oid:
+                    active_orders_by_id[oid] = order
+                else:
+                    # Fallback key if order id is absent
+                    fallback_key = str(order.get("client_order_id") or f"noid-{len(active_orders_by_id)}")
+                    active_orders_by_id[fallback_key] = order
+            active_orders = list(active_orders_by_id.values())
+            existing_client_order_ids = {
+                str(o.get("client_order_id") or "")
+                for o in active_orders
+                if o.get("client_order_id")
+            }
+            active_entry_orders_by_ticker_side = {
+                (
+                    str(o.get("ticker") or o.get("market_ticker") or ""),
+                    str(o.get("side") or "").lower(),
+                )
+                for o in active_orders
+                if str(o.get("action") or "").lower() == "buy"
+            }
+            current_exposure = compute_positions_exposure(positions) + compute_open_orders_exposure(active_orders)
+            if session_start_available_cash is None:
+                # Reconstruct a practical baseline so restarts with existing active orders
+                # do not reset reserved-cap tracking to zero.
+                session_start_available_cash = available_cash_dollars + current_exposure
+            session_reserved_cash = max(0.0, (session_start_available_cash or 0.0) - available_cash_dollars)
+            effective_exposure_for_cap = max(current_exposure, session_reserved_cash)
+            cash_floor_dollars = max(0.0, (session_start_available_cash or 0.0) - cap_dollars)
 
             candidates = _scan_once(cfg)
+            locked_yes = sum(1 for c in candidates if c.get("lock_status") == "LOCKED_YES")
+            locked_no = sum(1 for c in candidates if c.get("lock_status") == "LOCKED_NO")
+            console.print(
+                "Cycle summary: "
+                f"candidates={len(candidates)} "
+                f"locked_yes={locked_yes} "
+                f"locked_no={locked_no} "
+                f"positions={len(positions)} "
+                f"open_orders={len(active_orders)} "
+                f"cash=${available_cash_dollars:.2f} "
+                f"exposure=${current_exposure:.2f} "
+                f"reserved=${session_reserved_cash:.2f} "
+                f"cash_floor=${cash_floor_dollars:.2f} "
+                f"cap=${cap_dollars:.2f}"
+            )
 
             if cfg.risk.strategy_mode == "MAX_CYCLES" and cfg.risk.enable_exit_sells:
                 for position in positions:
                     ticker = position.get("ticker") or position.get("market_ticker")
                     if not ticker:
+                        cycle_counts["exit_not_eligible"] += 1
                         continue
+                    cycle_counts["exit_considered"] += 1
                     candidate = next((c for c in candidates if c.get("market_ticker") == ticker), None)
                     if not candidate:
+                        cycle_counts["exit_not_eligible"] += 1
                         continue
                     if candidate["hours_to_close"] > cfg.risk.max_exit_hours_to_close:
+                        cycle_counts["exit_not_eligible"] += 1
                         continue
                     if (candidate["lock_status"] == "LOCKED_YES" and str(position.get("side", "")).upper() != "YES") or (
                         candidate["lock_status"] == "LOCKED_NO" and str(position.get("side", "")).upper() != "NO"
                     ):
+                        cycle_counts["exit_not_eligible"] += 1
                         continue
                     book = normalize_orderbook(client.get_orderbook(ticker))
                     exit_decision = select_exit_order(position, book, cfg.risk)
                     if not exit_decision.should_trade:
+                        cycle_counts["exit_decision_blocked"] += 1
                         continue
                     cycle_key = f"EXIT-{datetime.now(timezone.utc).strftime('%Y%m%d')}"
                     exit_order = _order_payload(
@@ -420,24 +559,70 @@ def run(
                     if not enable_trading:
                         console.print(f"[DRY-RUN EXIT] {exit_order}")
                         db.insert_order(ticker, exit_order["client_order_id"], exit_order, {"dry_run": True}, "DRY_RUN")
+                        cycle_counts["exit_dry_run"] += 1
+                        continue
+                    if exit_order["client_order_id"] in existing_client_order_ids:
+                        cycle_counts["duplicate_order_skipped"] += 1
                         continue
                     resp = client.place_order(exit_order)
                     console.print(resp)
                     db.insert_order(ticker, exit_order["client_order_id"], exit_order, resp, "SUBMITTED")
+                    existing_client_order_ids.add(str(exit_order["client_order_id"]))
+                    cycle_counts["exit_submitted"] += 1
 
-            if cfg.risk.strategy_mode == "MAX_CYCLES" and current_exposure > cap_dollars:
+            if cfg.risk.strategy_mode == "MAX_CYCLES" and (
+                effective_exposure_for_cap > cap_dollars or available_cash_dollars < cash_floor_dollars
+            ):
                 console.print("MAX_CYCLES: skipping new entries because current exposure exceeds cap.")
+                console.print(
+                    "Cycle gates: "
+                    f"entry_unlocked={cycle_counts['entry_unlocked']} "
+                    f"entry_outside_exit_window={cycle_counts['entry_outside_exit_window']} "
+                    f"orderbook_missing={cycle_counts['orderbook_missing']} "
+                    f"spread_too_wide={cycle_counts['spread_too_wide']} "
+                    f"liquidity_too_low={cycle_counts['liquidity_too_low']} "
+                    f"edge_failed={cycle_counts['edge_failed']} "
+                    f"cap_failed={cycle_counts['cap_failed']} "
+                    f"cash_failed={cycle_counts['cash_failed']} "
+                    f"entry_dry_run={cycle_counts['entry_dry_run']} "
+                    f"entry_submitted={cycle_counts['entry_submitted']} "
+                    f"duplicate_order_skipped={cycle_counts['duplicate_order_skipped']} "
+                    f"ticker_side_guard_skipped={cycle_counts['ticker_side_guard_skipped']} "
+                    f"exit_considered={cycle_counts['exit_considered']} "
+                    f"exit_not_eligible={cycle_counts['exit_not_eligible']} "
+                    f"exit_blocked={cycle_counts['exit_decision_blocked']} "
+                    f"exit_dry_run={cycle_counts['exit_dry_run']} "
+                    f"exit_submitted={cycle_counts['exit_submitted']}"
+                )
                 time.sleep(int(interval_seconds))
                 continue
 
             for c in candidates:
                 if c["lock_status"] == "UNLOCKED":
+                    cycle_counts["entry_unlocked"] += 1
                     continue
                 if cfg.risk.strategy_mode == "MAX_CYCLES" and c["hours_to_close"] > cfg.risk.max_exit_hours_to_close:
+                    cycle_counts["entry_outside_exit_window"] += 1
                     continue
                 book = normalize_orderbook(client.get_orderbook(c["market_ticker"]))
                 decision = select_order(c["lock_status"], c["p_yes"], book, cfg.risk)
                 if not decision.should_trade:
+                    if decision.reason == "Missing orderbook prices":
+                        cycle_counts["orderbook_missing"] += 1
+                        if len(blocked_examples["orderbook_missing"]) < 5:
+                            blocked_examples["orderbook_missing"].append(str(c["market_ticker"]))
+                    elif decision.reason == "Spread too wide":
+                        cycle_counts["spread_too_wide"] += 1
+                        if len(blocked_examples["spread_too_wide"]) < 5:
+                            blocked_examples["spread_too_wide"].append(str(c["market_ticker"]))
+                    elif decision.reason == "Insufficient liquidity":
+                        cycle_counts["liquidity_too_low"] += 1
+                        if len(blocked_examples["liquidity_too_low"]) < 5:
+                            blocked_examples["liquidity_too_low"].append(str(c["market_ticker"]))
+                    elif decision.reason == "Price above edge-adjusted threshold":
+                        cycle_counts["edge_failed"] += 1
+                        if len(blocked_examples["edge_failed"]) < 5:
+                            blocked_examples["edge_failed"].append(str(c["market_ticker"]))
                     continue
 
                 target_side = decision.side
@@ -447,7 +632,14 @@ def run(
                     decision.price_cents = maker.price_cents
 
                 order_notional = decision.price_cents / 100
-                if not enforce_cap(current_exposure, order_notional, cap_dollars):
+                if not enforce_cap(effective_exposure_for_cap, order_notional, cap_dollars):
+                    cycle_counts["cap_failed"] += 1
+                    continue
+                if (available_cash_dollars - order_notional) < cash_floor_dollars:
+                    cycle_counts["cap_failed"] += 1
+                    continue
+                if available_cash_dollars < order_notional:
+                    cycle_counts["cash_failed"] += 1
                     continue
 
                 close_key = datetime.fromisoformat(c["close_ts"]).strftime("%Y%m%d")
@@ -465,11 +657,66 @@ def run(
                     console.print(f"[DRY-RUN] {order}")
                     db.insert_order(c["market_ticker"], order["client_order_id"], order, {"dry_run": True}, "DRY_RUN")
                     current_exposure += order_notional
+                    effective_exposure_for_cap += order_notional
+                    available_cash_dollars = max(0.0, available_cash_dollars - order_notional)
+                    cycle_counts["entry_dry_run"] += 1
                     continue
-                resp = client.place_order(order)
+                ticker_side_key = (str(order.get("ticker") or ""), str(order.get("side") or "").lower())
+                if ticker_side_key in active_entry_orders_by_ticker_side:
+                    cycle_counts["ticker_side_guard_skipped"] += 1
+                    continue
+                if order["client_order_id"] in existing_client_order_ids:
+                    cycle_counts["duplicate_order_skipped"] += 1
+                    continue
+                try:
+                    resp = client.place_order(order)
+                except APIError as exc:
+                    if "order_already_exists" in str(exc):
+                        cycle_counts["duplicate_order_skipped"] += 1
+                        existing_client_order_ids.add(str(order["client_order_id"]))
+                        active_entry_orders_by_ticker_side.add(ticker_side_key)
+                        continue
+                    console.print(f"[ORDER ERROR] ticker={c['market_ticker']} payload={order}")
+                    raise
                 console.print(resp)
                 db.insert_order(c["market_ticker"], order["client_order_id"], order, resp, "SUBMITTED")
                 current_exposure += order_notional
+                effective_exposure_for_cap += order_notional
+                available_cash_dollars = max(0.0, available_cash_dollars - order_notional)
+                existing_client_order_ids.add(str(order["client_order_id"]))
+                active_entry_orders_by_ticker_side.add(ticker_side_key)
+                cycle_counts["entry_submitted"] += 1
+            console.print(
+                "Cycle gates: "
+                f"entry_unlocked={cycle_counts['entry_unlocked']} "
+                f"entry_outside_exit_window={cycle_counts['entry_outside_exit_window']} "
+                f"orderbook_missing={cycle_counts['orderbook_missing']} "
+                f"spread_too_wide={cycle_counts['spread_too_wide']} "
+                f"liquidity_too_low={cycle_counts['liquidity_too_low']} "
+                f"edge_failed={cycle_counts['edge_failed']} "
+                f"cap_failed={cycle_counts['cap_failed']} "
+                f"cash_failed={cycle_counts['cash_failed']} "
+                f"entry_dry_run={cycle_counts['entry_dry_run']} "
+                f"entry_submitted={cycle_counts['entry_submitted']} "
+                f"duplicate_order_skipped={cycle_counts['duplicate_order_skipped']} "
+                f"ticker_side_guard_skipped={cycle_counts['ticker_side_guard_skipped']} "
+                f"exit_considered={cycle_counts['exit_considered']} "
+                f"exit_not_eligible={cycle_counts['exit_not_eligible']} "
+                f"exit_blocked={cycle_counts['exit_decision_blocked']} "
+                f"exit_dry_run={cycle_counts['exit_dry_run']} "
+                f"exit_submitted={cycle_counts['exit_submitted']}"
+            )
+            blocked_parts = []
+            if blocked_examples["orderbook_missing"]:
+                blocked_parts.append("orderbook_missing=" + ", ".join(blocked_examples["orderbook_missing"]))
+            if blocked_examples["edge_failed"]:
+                blocked_parts.append("edge_failed=" + ", ".join(blocked_examples["edge_failed"]))
+            if blocked_examples["spread_too_wide"]:
+                blocked_parts.append("spread_too_wide=" + ", ".join(blocked_examples["spread_too_wide"]))
+            if blocked_examples["liquidity_too_low"]:
+                blocked_parts.append("liquidity_too_low=" + ", ".join(blocked_examples["liquidity_too_low"]))
+            if blocked_parts:
+                console.print("Cycle blocked tickers: " + " | ".join(blocked_parts))
         except APIError as exc:
             console.print(f"Run loop API error: {exc}")
         except Exception as exc:

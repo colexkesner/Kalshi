@@ -73,9 +73,15 @@ def compute_open_orders_exposure(orders: list[dict[str, Any]]) -> float:
         if action != "buy":
             continue
         count = _to_float(order.get("remaining_count") or order.get("count") or order.get("count_fp")) or 0
-        price = order.get("yes_price")
-        if price is None:
+        side = str(order.get("side") or "").lower()
+        if side == "yes":
+            price = order.get("yes_price")
+        elif side == "no":
             price = order.get("no_price")
+        else:
+            price = order.get("yes_price")
+            if price is None:
+                price = order.get("no_price")
         if price is None:
             price = order.get("price")
         price_val = _to_float(price) or 0

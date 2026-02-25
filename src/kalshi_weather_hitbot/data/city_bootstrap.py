@@ -18,6 +18,30 @@ logger = logging.getLogger(__name__)
 
 INCLUDE_PATTERNS = ["highest temperature", "lowest temperature", "snow", "rain"]
 EXCLUDE_PATTERNS = ["volcano", "earthquake", "hurricane", "tornado", "wildfire"]
+AGGREGATE_TICKER_PATTERNS = ["HIGHUS", "KXHIGHUS", "CITIESWEATHER"]
+CITY_CODE_TO_ICAO = {
+    "ATL": "KATL",
+    "AUS": "KAUS",
+    "BOS": "KBOS",
+    "CHI": "KMDW",
+    "DAL": "KDAL",
+    "DC": "KDCA",
+    "DEN": "KDEN",
+    "HOU": "KHOU",
+    "LAX": "KLAX",
+    "LV": "KLAS",
+    "MIA": "KMIA",
+    "MIN": "KMSP",
+    "NOLA": "KMSY",
+    "NY": "KLGA",
+    "NY0": "KLGA",
+    "OKC": "KOKC",
+    "PHIL": "KPHL",
+    "PHX": "KPHX",
+    "SATX": "KSAT",
+    "SEA": "KSEA",
+    "SFO": "KSFO",
+}
 
 
 @dataclass
@@ -26,6 +50,10 @@ class ContractTermsInfo:
     resolution_source_type: str
     nws_wfo: str | None
     nws_location_label: str | None
+
+
+def _series_ticker(series: dict[str, Any]) -> str:
+    return str(series.get("ticker") or series.get("series_ticker") or "")
 
 
 def is_city_climate_series(series: dict[str, Any]) -> bool:
@@ -38,10 +66,28 @@ def is_city_climate_series(series: dict[str, Any]) -> bool:
 
 
 def is_daily_high_temp_series(series: dict[str, Any]) -> bool:
-    ticker = str(series.get("ticker") or "").upper()
-    if "HIGHTEMP" not in ticker and "HIGH-TEMP" not in ticker:
+    ticker = _series_ticker(series).upper()
+    text = " ".join(
+        str(series.get(k, "")) for k in ["title", "subtitle", "description", "name", "ticker", "series_ticker", "tags", "category"]
+    ).lower()
+    if any(p in text for p in EXCLUDE_PATTERNS):
         return False
-    return is_city_climate_series(series)
+    if any(p in ticker for p in AGGREGATE_TICKER_PATTERNS):
+        return False
+    ticker_match = "HIGHTEMP" in ticker or "HIGH-TEMP" in ticker
+    text_match = any(
+        phrase in text
+        for phrase in ["highest temperature", "high temperature", "high temp"]
+    )
+    return ticker_match or text_match
+
+
+def _extract_city_code_from_ticker(series_ticker: str) -> str | None:
+    t = series_ticker.upper()
+    for code in sorted(CITY_CODE_TO_ICAO.keys(), key=len, reverse=True):
+        if code in t:
+            return code
+    return None
 
 
 def derive_city_key(series_ticker: str, location_name: str | None) -> str:
@@ -59,6 +105,9 @@ def derive_city_key(series_ticker: str, location_name: str | None) -> str:
     }
     if suffix in ticker_map:
         return ticker_map[suffix]
+    city_code = _extract_city_code_from_ticker(series_ticker)
+    if city_code and city_code.lower() in ticker_map:
+        return ticker_map[city_code.lower()]
     if location_name:
         cleaned = re.sub(r"[^a-z0-9]+", "_", location_name.lower()).strip("_")
         return cleaned[:48]
@@ -199,6 +248,13 @@ def _resolve_station_from_location(location_name: str, station_index: list[dict[
     return best[1] if best else None
 
 
+def _resolve_station_from_icao(icao: str, station_index: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for station in station_index:
+        if str(station.get("icaoId") or "").upper() == icao.upper():
+            return station
+    return None
+
+
 def build_city_mapping(
     series_list: list[dict[str, Any]],
     downloader: requests.Session | None = None,
@@ -215,13 +271,19 @@ def build_city_mapping(
     for series in series_list:
         if not is_daily_high_temp_series(series):
             continue
-        ticker = str(series.get("ticker") or "")
+        ticker = _series_ticker(series)
         if not ticker:
             continue
 
         terms_url = series.get("contract_terms_url")
         terms_info = ContractTermsInfo(None, "metar_nws_combo", None, None)
-        if terms_url:
+        inline_terms_text = str(series.get("contract_terms_text") or "")
+        if inline_terms_text:
+            try:
+                terms_info = parse_contract_terms_text(inline_terms_text)
+            except Exception as exc:
+                logger.warning("Failed parsing inline contract terms for %s: %s", ticker, exc)
+        elif terms_url:
             try:
                 resp = session.get(terms_url, timeout=20)
                 resp.raise_for_status()
@@ -263,6 +325,14 @@ def build_city_mapping(
         resolved = None
         if current.get("resolution_location_name"):
             resolved = _resolve_station_from_location(current["resolution_location_name"], station_index)
+        if not resolved:
+            city_code = _extract_city_code_from_ticker(ticker)
+            fallback_icao = CITY_CODE_TO_ICAO.get(city_code or "")
+            if fallback_icao:
+                resolved = _resolve_station_from_icao(fallback_icao, station_index)
+                if resolved and not current.get("resolution_location_name"):
+                    current["resolution_location_name"] = f"{resolved.get('name')}, {resolved.get('state')}"
+                    current["resolution_source_type"] = "ticker_fallback"
         if resolved:
             current["icao_station"] = resolved.get("icaoId")
             current["lat"] = resolved.get("lat")

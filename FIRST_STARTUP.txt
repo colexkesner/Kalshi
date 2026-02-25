@@ -1,0 +1,181 @@
+kalshi-weather-hitbot - First Startup (Step by Step)
+
+This guide is for a first local run on Windows PowerShell.
+
+1) Open a terminal in the repo root
+   Example:
+   C:\Users\colek\OneDrive\Documents\GitHub\polymarket
+
+2) Create and activate a virtual environment (if not already done)
+   python -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+
+3) Install dependencies
+   pip install -e .[dev]
+   Optional local monitor dashboard:
+   pip install -e .[dev,monitor]
+
+4) Configure environment variables in .env
+   Minimum values to check:
+   - KALSHI_ENV=demo
+   - KALSHI_API_KEY_ID=...
+   - KALSHI_PRIVATE_KEY_PATH=./secrets/demoKalshi.key.txt
+   - KALSHI_CONFIG_PATH=./configs/config.yaml
+
+5) Verify the config file exists
+   - configs/config.yaml
+   If you do not have one yet, start from configs/config.example.yaml.
+
+6) Bootstrap city mappings (writes configs/cities.yaml)
+   Default climate bootstrap:
+   kalshi-hitbot bootstrap-cities --overwrite --out configs/cities.yaml --category Climate
+
+   If results are empty, retry without tag filtering (PowerShell-safe):
+   kalshi-hitbot bootstrap-cities --overwrite --out configs/cities.yaml --category Climate --tags " "
+
+   What to look for in output:
+   - Series query used: ...
+   - Series seen: ...
+   - High-temp series used: ...
+   - Resolved stations: ...
+   - Unresolved station names: ...
+
+7) Review configs/cities.yaml
+   A usable city entry should have:
+   - icao_station
+   - lat
+   - lon
+   - tz
+
+   Some entries may have:
+   - needs_manual_override: true
+   Those will be skipped until fixed.
+
+8) Run a safe scan (no trading)
+   kalshi-hitbot scan
+
+   The CLI prints:
+   - total cities
+   - usable cities
+   - skipped cities
+
+9) Run the bot in dry-run mode (safe by default)
+   kalshi-hitbot run
+
+   The run loop now prints a cycle summary each interval:
+   - candidates
+   - locked_yes / locked_no
+   - positions / open_orders
+   - exposure / cap
+
+9b) Optional live local monitoring dashboard (read-only)
+    streamlit run src/kalshi_weather_hitbot/monitor_dashboard.py
+
+    Dashboard shows:
+    - recent orders (submitted + dry-run)
+    - recent evaluations
+    - city mapping health (total/usable/skipped)
+    - city mapping snapshots
+
+10) Enable trading only after verifying behavior
+    Demo trading:
+    kalshi-hitbot run --enable-trading
+
+    Production trading requires:
+    - KALSHI_ENV=production
+    - explicit --enable-trading
+    - confirmation prompt in CLI
+
+Troubleshooting
+
+- "bootstrap-cities failed: ..."
+  Check API credentials, network access, and the Kalshi base URL selected by KALSHI_ENV.
+
+- cities.yaml is empty ({})
+  Retry with:
+  kalshi-hitbot bootstrap-cities --overwrite --out configs/cities.yaml --category Climate --tags " "
+
+- scan shows 0 candidates
+  Check:
+  - configs/cities.yaml has usable entries
+  - market hours/close windows
+  - weather data APIs reachable
+
+Appendix A - Live Trading (Real Money) Startup Checklist
+
+Use this only after you have verified behavior in demo and dry-run.
+
+1) Confirm production credentials and key path
+   In .env:
+   - KALSHI_ENV=production
+   - KALSHI_API_KEY_ID=<your production key id>
+   - KALSHI_PRIVATE_KEY_PATH=<your production private key path>
+
+2) Confirm config still has safe risk limits
+   Review configs/config.yaml:
+   - capital.cap_value
+   - risk.max_per_market_notional
+   - risk.max_open_positions
+   - risk.max_orders_per_market
+   - risk.strategy_mode
+
+3) Re-bootstrap city mappings (recommended before first live session)
+   kalshi-hitbot bootstrap-cities --overwrite --out configs/cities.yaml --category Climate --tags " "
+
+4) Sanity check markets and candidates without trading
+   kalshi-hitbot scan
+
+5) Start live trading
+   kalshi-hitbot run --enable-trading
+
+   Notes:
+   - The CLI will require an explicit confirmation string in production.
+   - Watch terminal output for cycle summaries and submitted order responses.
+
+6) Monitor while running (recommended)
+   In another terminal:
+   streamlit run src/kalshi_weather_hitbot/monitor_dashboard.py
+
+7) Stop safely
+   Press Ctrl+C in the bot terminal.
+
+Appendix B - Aggressive Demo MAX_CYCLES Test Run
+
+This is for throughput testing (more entries/exits), not production settings.
+
+1) Keep environment on demo
+   In .env:
+   - KALSHI_ENV=demo
+
+2) Back up your current config (optional but recommended)
+   Copy configs/config.yaml to another file.
+
+3) Apply the aggressive demo config
+   Replace your config with:
+   - configs/config.max_cycles_demo.aggressive.example.yaml
+
+   Or manually copy just the risk block values into configs/config.yaml.
+
+4) Confirm strategy mode + exits are enabled
+   In configs/config.yaml:
+   - risk.strategy_mode: MAX_CYCLES
+   - risk.enable_exit_sells: true
+
+5) Ensure city mappings are present and usable
+   kalshi-hitbot bootstrap-cities --overwrite --out configs/cities.yaml --category Climate --tags " "
+   kalshi-hitbot scan
+
+6) Run aggressive test in dry-run first (recommended)
+   kalshi-hitbot run
+
+7) Run aggressive test with demo trading enabled
+   kalshi-hitbot run --enable-trading
+
+8) Watch for proof that MAX_CYCLES is working
+   - terminal cycle summaries each loop
+   - exit attempts before entry attempts
+   - orders recorded in kalshi_weather_hitbot.db (orders table)
+   - Streamlit dashboard updates in recent orders/evaluations
+
+9) Return to your normal config when done
+   Restore your original configs/config.yaml values.

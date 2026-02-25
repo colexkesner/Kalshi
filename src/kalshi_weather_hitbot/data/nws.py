@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
 import requests
 
 from kalshi_weather_hitbot.data.cache import TTLCache
+
+
+logger = logging.getLogger(__name__)
 
 
 class NWSClient:
@@ -21,7 +25,16 @@ class NWSClient:
             return cached
         resp = self.session.get(url, timeout=15)
         resp.raise_for_status()
-        data = resp.json()
+        try:
+            data = resp.json()
+        except requests.exceptions.JSONDecodeError as exc:
+            snippet = (resp.text or "")[:200].strip()
+            raise RuntimeError(
+                f"NWS returned non-JSON for {url} status={resp.status_code} "
+                f"content-type={resp.headers.get('Content-Type')} snippet={snippet!r}"
+            ) from exc
+        if not isinstance(data, dict):
+            raise RuntimeError(f"NWS returned unexpected payload type for {url}: {type(data).__name__}")
         self.cache.set(url, data)
         return data
 

@@ -60,3 +60,24 @@ def test_bootstrap_writes_expected_city_structure(tmp_path: Path):
     out = tmp_path / "cities.yaml"
     out.write_text(dump_city_mapping_yaml(mapping))
     assert out.read_text().strip()
+
+
+def test_bootstrap_uses_ticker_fallback_station_when_terms_missing(tmp_path: Path):
+    series = [
+        {
+            "ticker": "KXHIGHMIA",
+            "title": "Miami high temp",
+            "category": "Climate",
+        }
+    ]
+    mapping, needs_manual = build_city_mapping(
+        series,
+        downloader=_Session(),
+        station_cache_path=str(tmp_path / "stations.cache.json.gz"),
+    )
+    assert "miami" in mapping
+    city = mapping["miami"]
+    assert city["icao_station"] == "KMIA"
+    assert city["needs_manual_override"] is False
+    assert city["resolution_source_type"] == "ticker_fallback"
+    assert not needs_manual
