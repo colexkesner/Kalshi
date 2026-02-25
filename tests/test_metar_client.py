@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import requests
+
 from kalshi_weather_hitbot.data.metar import MetarClient, max_observed_temp_f
 
 
@@ -25,10 +27,25 @@ class _Session:
         return _Resp()
 
 
+class _TimeoutSession:
+    headers = {}
+
+    def get(self, *args, **kwargs):
+        _ = args, kwargs
+        raise requests.ReadTimeout("read timed out")
+
+
 def test_fetch_metar_returns_empty_list_on_non_json_response():
     client = MetarClient("https://aviationweather.gov", "test-agent")
     client.session = _Session()  # type: ignore[assignment]
     out = client.fetch_metar("KMDW")
+    assert out == []
+
+
+def test_fetch_metar_returns_empty_list_on_timeout():
+    client = MetarClient("https://aviationweather.gov", "test-agent")
+    client.session = _TimeoutSession()  # type: ignore[assignment]
+    out = client.fetch_metar("K07F")
     assert out == []
 
 

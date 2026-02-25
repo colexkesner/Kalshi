@@ -24,8 +24,18 @@ class MetarClient:
         cached = self.cache.get(key)
         if cached is not None:
             return cached
-        resp = self.session.get(f"{self.base_url}/api/data/metar", params={"ids": station, "format": "json", "hours": hours}, timeout=15)
-        resp.raise_for_status()
+        try:
+            resp = self.session.get(
+                f"{self.base_url}/api/data/metar",
+                params={"ids": station, "format": "json", "hours": hours},
+                timeout=15,
+            )
+            resp.raise_for_status()
+        except requests.RequestException as exc:
+            logger.warning("AviationWeather METAR request failed for station=%s error=%s", station, exc)
+            data: list[dict[str, Any]] = []
+            self.cache.set(key, data)
+            return data
         try:
             data = resp.json()
         except requests.exceptions.JSONDecodeError:
